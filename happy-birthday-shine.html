@@ -939,10 +939,45 @@ body[data-state="closing"] #scene { animation: card-settle 0.5s ease-out 0.4s; }
 #message .msg-date {
   font-size: 14px;
   color: var(--ink-soft);
-  opacity: 0;
-  transition: opacity 0.5s ease;
 }
-#message .msg-date.msg-on { opacity: 1; }
+
+/* The parts held back until the candles are out ("Happy birthday!", the sign-off, the date).
+   They keep their layout space (visibility + opacity, never display:none), so nothing shifts
+   when they appear. JS also toggles aria-hidden. Hidden state: quick fade, then visibility off. */
+#message .msg-late,
+#message .msg-sign,
+#message .msg-date {
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.2s ease, visibility 0s linear 0.2s;
+}
+#message .msg-late.msg-on,
+#message .msg-sign.msg-on,
+#message .msg-date.msg-on {
+  visibility: visible;
+  opacity: 1;
+  transition: opacity 0.5s ease, visibility 0s linear 0s;
+}
+#message .msg-sign.msg-on { transition-delay: 0.7s, 0.7s; }   /* "Love, Marc" fades in after the pop... */
+#message .msg-date.msg-on { transition-delay: 1.05s, 1.05s; } /* ...and the date after that */
+
+/* "Happy birthday!": bold rose, each letter pops in with a little overshoot */
+#message .msg-late .msg-ch {
+  display: inline-block;
+  opacity: 1;
+  font-weight: 700;
+  color: #a02a5a;                    /* on cream: about 6.7:1 */
+}
+#message .msg-late.msg-on .msg-ch.msg-pop {
+  animation: msg-pop 0.75s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation-delay: calc(var(--i, 0) * 45ms);
+}
+@keyframes msg-pop {
+  0%   { opacity: 0; transform: translateY(0.5em) scale(0.3) rotate(-10deg); }
+  45%  { opacity: 1; transform: translateY(-0.28em) scale(1.35) rotate(6deg); }
+  70%  { transform: translateY(0.04em) scale(0.94) rotate(-3deg); }
+  100% { opacity: 1; transform: translateY(0) scale(1) rotate(0); }
+}
 
 /* confetti canvas (created on demand, removed again after a few seconds) */
 .bdc-confetti {
@@ -959,12 +994,19 @@ body[data-state="closing"] #scene { animation: card-settle 0.5s ease-out 0.4s; }
 @media (prefers-reduced-motion: reduce) {
   #message .msg-em.msg-wiggle { animation: none; }
   #message .msg-caret { display: none; }
-  #message .msg-ch, #message .msg-date { transition: none; }
+  #message .msg-ch { transition: none; }
+  /* delayed parts: simple, quick fades, no pop */
+  #message .msg-late.msg-on .msg-ch.msg-pop { animation: none; }
+  #message .msg-late.msg-on,
+  #message .msg-sign.msg-on,
+  #message .msg-date.msg-on { transition-duration: 0.4s, 0s; }
+  #message .msg-sign.msg-on { transition-delay: 0.15s, 0.15s; }
+  #message .msg-date.msg-on { transition-delay: 0.3s, 0.3s; }
 }
 
 
 /* ---- src/finale.css ---- */
-/* finale.css - blow prompt (#blow-ui) and the finale (#finale: manatee, sign-off, replay).
+/* finale.css - blow prompt (#blow-ui) and the finale (#finale: manatee, replay).
    Everything is scoped under #blow-ui / #finale. Layout hooks come from core.css:
    #blow-ui sits at the bottom of the inside page (flex column), #finale is a click-through full-page layer. */
 
@@ -975,7 +1017,7 @@ body[data-state="closing"] #scene { animation: card-settle 0.5s ease-out 0.4s; }
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: 44px;
+  height: 44px;
   min-width: 44px;
   padding: 0 16px;
   margin: 0;
@@ -1013,13 +1055,28 @@ body[data-state="closing"] #scene { animation: card-settle 0.5s ease-out 0.4s; }
 #blow-ui .bu-mic:hover { background: #a82a62; }
 #blow-ui .bu-mic.is-busy { cursor: progress; background: #8f2354; }
 
+/* ---------- layout bands (shared by the blow UI and the finale) ----------
+   --fp   = padding between the page edge and the prompt / buttons / Replay
+            (>= 18px, ~19px on the narrowest card, scaled with the card width).
+   --lift = how far the cake band and the note are raised, so the bottom strip can hold a 44px button
+            with --fp below it and still stay clear of the note's "Love, Marc / date" row (whose space
+            is always reserved). The cake art shrinks a little to fit (it is bottom-anchored). */
+#inside {
+  --fp: clamp(18px, calc(var(--w) * 0.06), 26px);
+  --lift: calc(var(--w) * 0.062);
+}
+#popup   { top: calc(var(--fp) + var(--w) * 0.022); height: calc(56% - var(--lift) - var(--fp) - var(--w) * 0.022); }
+#message { top: calc(56% - var(--lift)); }
+
 /* ---------- blow UI ----------
-   Only the button row lives in the bottom strip (~44px: the note's date row ends ~50px above the
-   page bottom on the narrowest card). The wish prompt is pinned to the empty band above the flames. */
+   Full-page, click-through layer: the wish prompt is pinned --fp below the top edge (the band above the
+   flames), the button row --fp above the bottom edge. */
 #blow-ui {
-  bottom: 4px;
+  top: 0;
+  bottom: 0;
+  justify-content: flex-end;
   gap: 0;
-  padding: 0 10px;
+  padding: 0 10px var(--fp);
   pointer-events: none;                 /* only the buttons take clicks */
 }
 #blow-ui .bu-btns { pointer-events: auto; }
@@ -1027,7 +1084,7 @@ body[data-state="closing"] #scene { animation: card-settle 0.5s ease-out 0.4s; }
   position: absolute;
   left: 0;
   right: 0;
-  top: calc(100% + 10px - var(--h));    /* = 6px below the top of the page (#blow-ui is bottom-anchored, 4px up) */
+  top: var(--fp);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1087,8 +1144,8 @@ body[data-state="closing"] #scene { animation: card-settle 0.5s ease-out 0.4s; }
 #finale .fn-manatee {
   position: absolute;
   left: 2%;
-  bottom: 44.5%;                        /* stands on the lower edge of the cake area */
-  width: 52%;
+  bottom: calc(44.5% + var(--lift));    /* stands on the lower edge of the cake area */
+  width: 48%;
   opacity: 0;
   visibility: hidden;
   transform: translateX(-130%);
@@ -1122,33 +1179,25 @@ body[data-state="closing"] #scene { animation: card-settle 0.5s ease-out 0.4s; }
   65%      { transform: translateY(-4px) rotate(-2deg) scale(0.99, 1.04); }
 }
 
-/* sign-off (top band, where the wish prompt was) and Replay (bottom strip, where the buttons were) */
-#finale .fn-sign {
+/* Replay (bottom strip, where the buttons were) */
+#finale .fn-replay {
   position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 10px 4px;
+  left: 0;
+  right: 0;
+  bottom: var(--fp);
+  margin: 0 auto;
+  width: fit-content;
   opacity: 0;
   visibility: hidden;
-  transform: translateY(12px);
+  translate: 0 12px;
   pointer-events: none;
 }
-#finale .fn-sign.is-on {
+#finale .fn-replay.is-on {
   opacity: 1;
   visibility: visible;
-  transform: none;
-  transition: opacity 0.5s ease, transform 0.6s cubic-bezier(0.3, 1.4, 0.5, 1);
-}
-#finale .fn-sign.is-on .fn-replay { pointer-events: auto; }
-#finale .fn-line {
-  margin: 0;
-  font: 700 18px/1.2 var(--font-hand);
-  color: #a02a5a;
-  text-align: center;
-  text-wrap: balance;
+  translate: none;
+  pointer-events: auto;
+  transition: opacity 0.5s ease, translate 0.6s cubic-bezier(0.3, 1.4, 0.5, 1), transform 0.12s ease, box-shadow 0.12s ease, background-color 0.2s ease;
 }
 
 /* ---------- reduced motion: fades only ---------- */
@@ -1167,7 +1216,7 @@ body[data-state="closing"] #scene { animation: card-settle 0.5s ease-out 0.4s; }
     transition: opacity 0.4s ease;
   }
   #finale .fn-manatee.is-slide.is-munching .fn-art { animation: none; }
-  #finale .fn-sign.is-on { transform: none; transition: opacity 0.4s ease; }
+  #finale .fn-replay.is-on { translate: none; transition: opacity 0.4s ease; }
 }
 
 
@@ -1582,8 +1631,8 @@ body[data-state="closing"] #scene { animation: card-settle 0.5s ease-out 0.4s; }
 <p class="msg-greet"></p>
 <p class="msg-body"></p>
 <div class="msg-foot">
-  <p class="msg-sign"></p>
-  <p class="msg-date"></p>
+  <p class="msg-sign" aria-hidden="true"></p>
+  <p class="msg-date" aria-hidden="true"></p>
 </div>
         </div>
         <div id="blow-ui" hidden></div>
@@ -2399,20 +2448,26 @@ var CONFIG = window.CONFIG || {};
 var doc = document;
 var root = doc.getElementById('message');
 
-var TEXT = "I tried to bake you a cake. Legally, this is a cake. You're still the sweetest thing in the world. Happy birthday!";
+var MAIN = "I tried to bake you a cake. Legally, this is a cake. You're still the sweetest thing in the world.";
+var LATE = 'Happy birthday!\u00a0\uD83D\uDC95';   // "Happy birthday! 💕": held back until the candles are out (with "Love, ..." and the date); the NBSP keeps "!" and the heart on one line
 var EMPHASIS = 'Legally, this is a cake.';
 
 var CHAR_MS = 25;      // per character
 var PAUSE_END = 260;   // after . ! ?
 var PAUSE_MID = 120;   // after , ; :
+var LATE_DELAY = 1400; // after 'candlesOut', so the finale lands after the confetti
 
 /* ====================================================================== message */
-var greetEl, bodyEl, signEl, dateEl, footEl;
-var chars = [];        // [{ el, ch, em }] in typing order, across greeting, body and sign-off
+var greetEl, bodyEl, signEl, dateEl, footEl, lateEl;
+var chars = [];        // [{ el, ch, em }] typed on popupDone: greeting + main body only
+var lateChars = [];    // the characters of "Happy birthday! 💕" (popped in after candlesOut)
 var emEls = [];
 var caret = null;
 var timer = null;
+var lateTimer = null;
 var status = 'idle';   // 'idle' | 'typing' | 'done'
+var lateShown = false;
+var latePending = false;   // candlesOut came while the main text was still typing
 var builtFor = '';
 
 function mk(tag, cls) {
@@ -2421,18 +2476,10 @@ function mk(tag, cls) {
   return e;
 }
 
-/* Fill `host` with word wrappers and one span per character (spaces stay plain text
-   so lines wrap normally). Returns nothing; pushes into `chars`. */
-function fill(host, str, emStart, emEnd, hidden) {
-  host.textContent = '';
-  var sr = mk('span', 'sr-only');          // full text for screen readers
-  sr.textContent = str;
-  var vis = mk('span', null);
-  vis.setAttribute('aria-hidden', 'true');
-  host.appendChild(sr);
-  host.appendChild(vis);
-
-  var i = 0, n = str.length, emIdx = 0;
+/* Fill `vis` with word wrappers and one span per character (spaces stay plain text
+   so lines wrap normally). Pushes the character records into `list`. */
+function fillVis(vis, str, emStart, emEnd, list) {
+  var i = 0, n = str.length, emIdx = 0, idx = 0;
   while (i < n) {
     if (str.charAt(i) === ' ') {
       vis.appendChild(doc.createTextNode(' '));
@@ -2442,7 +2489,11 @@ function fill(host, str, emStart, emEnd, hidden) {
     var w = mk('span', 'msg-w');
     while (i < n && str.charAt(i) !== ' ') {
       var c = mk('span', 'msg-ch');
-      c.textContent = str.charAt(i);
+      var cu = str.charAt(i);
+      var cc = str.charCodeAt(i);
+      if (cc >= 0xD800 && cc <= 0xDBFF && i + 1 < n) cu += str.charAt(i + 1);   // keep surrogate pairs (emoji) whole
+      c.textContent = cu;
+      c.style.setProperty('--i', String(idx++));
       var em = emStart >= 0 && i >= emStart && i < emEnd;
       if (em) {
         c.className += ' msg-em';
@@ -2450,11 +2501,46 @@ function fill(host, str, emStart, emEnd, hidden) {
         emEls.push(c);
       }
       w.appendChild(c);
-      chars.push({ el: c, ch: str.charAt(i), em: em, last: em && i === emEnd - 1 });
-      i++;
+      list.push({ el: c, ch: cu, em: em, last: em && i === emEnd - 1 });
+      i += cu.length;
     }
     vis.appendChild(w);
   }
+}
+
+/* a typed block: one sr-only copy for screen readers + one aria-hidden visual copy */
+function fill(host, str, emStart, emEnd, list) {
+  host.textContent = '';
+  var sr = mk('span', 'sr-only');
+  sr.textContent = str;
+  var vis = mk('span', null);
+  vis.setAttribute('aria-hidden', 'true');
+  host.appendChild(sr);
+  host.appendChild(vis);
+  fillVis(vis, str, emStart, emEnd, list);
+  return vis;
+}
+
+/* The delayed parts keep their layout space (visibility/opacity, never display:none) and are
+   aria-hidden, so neither sighted nor screen-reader users get them before the candles are out. */
+function setLate(on) {
+  lateShown = on;
+  var parts = [lateEl, signEl, dateEl];
+  for (var i = 0; i < parts.length; i++) {
+    var el = parts[i];
+    if (!el) continue;
+    if (on) { el.classList.add('msg-on'); el.removeAttribute('aria-hidden'); }
+    else { el.classList.remove('msg-on'); el.setAttribute('aria-hidden', 'true'); }
+  }
+  for (var k = 0; k < lateChars.length; k++) lateChars[k].el.classList.remove('msg-pop');
+  if (on) {
+    void root.offsetWidth;   // restart the pop after a replay
+    for (var j = 0; j < lateChars.length; j++) lateChars[j].el.classList.add('msg-pop');
+  }
+}
+
+function stopLateTimer() {
+  if (lateTimer) { clearTimeout(lateTimer); lateTimer = null; }
 }
 
 function build() {
@@ -2466,23 +2552,48 @@ function build() {
   footEl = root.querySelector('.msg-foot');
   if (!greetEl || !bodyEl || !signEl || !dateEl) return;
 
+  stopLateTimer();
   chars = [];
+  lateChars = [];
   emEls = [];
   caret = null;
+  latePending = false;
 
   var to = CONFIG.to ? 'Dear ' + CONFIG.to + ',' : '';
   var from = CONFIG.from ? 'Love, ' + CONFIG.from : '';
   var date = CONFIG.date ? String(CONFIG.date) : '';
 
-  fill(greetEl, to, -1, -1);
-  var es = TEXT.indexOf(EMPHASIS);
-  fill(bodyEl, TEXT, es, es < 0 ? -1 : es + EMPHASIS.length);
-  fill(signEl, from, -1, -1);
+  fill(greetEl, to, -1, -1, chars);
+
+  // body: [sr main][vis main] + [late wrapper: sr copy + vis copy]; the wrapper is the only part toggled
+  bodyEl.textContent = '';
+  var srMain = mk('span', 'sr-only');
+  srMain.textContent = MAIN + ' ';
+  var visMain = mk('span', null);
+  visMain.setAttribute('aria-hidden', 'true');
+  bodyEl.appendChild(srMain);
+  bodyEl.appendChild(visMain);
+  var es = MAIN.indexOf(EMPHASIS);
+  fillVis(visMain, MAIN, es, es < 0 ? -1 : es + EMPHASIS.length, chars);
+  visMain.appendChild(doc.createTextNode(' '));
+  lateEl = mk('span', 'msg-late');
+  var srLate = mk('span', 'sr-only');
+  srLate.textContent = LATE.replace(/\u00a0/g, ' ');
+  var visLate = mk('span', null);
+  visLate.setAttribute('aria-hidden', 'true');
+  lateEl.appendChild(srLate);
+  lateEl.appendChild(visLate);
+  bodyEl.appendChild(lateEl);
+  fillVis(visLate, LATE, -1, -1, lateChars);
+  for (var i = 0; i < lateChars.length; i++) lateChars[i].el.classList.add('msg-on');
+
+  // sign-off and date: a single copy each (no duplicate text), hidden as a whole
+  signEl.textContent = from;
   dateEl.textContent = date;
-  dateEl.classList.remove('msg-on');
   greetEl.hidden = !to;
   signEl.hidden = !from;
   dateEl.hidden = !date;
+  setLate(false);
   builtFor = [to, from, date].join('|');
 }
 
@@ -2497,14 +2608,13 @@ function removeCaret() {
 
 function showAll() {
   for (var i = 0; i < chars.length; i++) chars[i].el.classList.add('msg-on');
-  if (dateEl) dateEl.classList.add('msg-on');
 }
 
 function finish() {
   stopTimer();
   removeCaret();
-  if (dateEl) dateEl.classList.add('msg-on');
   status = 'done';
+  if (latePending) { latePending = false; setLate(true); }
 }
 
 function wiggle() {
@@ -2527,7 +2637,7 @@ function typeNext(idx) {
   var atEnd = next >= chars.length || chars[next].el.parentNode.parentNode.parentNode !== item.el.parentNode.parentNode.parentNode;
   if (/[.!?]/.test(item.ch)) wait += PAUSE_END;
   else if (/[,;:]/.test(item.ch)) wait += PAUSE_MID;
-  if (atEnd && next < chars.length) wait += 180;   // short beat between greeting / body / sign-off
+  if (atEnd && next < chars.length) wait += 180;   // short beat between greeting and body
   timer = setTimeout(function () { typeNext(next); }, wait);
 }
 
@@ -2546,16 +2656,35 @@ function reveal() {
   timer = setTimeout(function () { typeNext(0); }, 250);   // let the fade-in start first
 }
 
+/* candlesOut: after the confetti has landed, pop in "Happy birthday!", then the sign-off and date */
+function scheduleLate() {
+  if (!root || lateShown) return;
+  stopLateTimer();
+  lateTimer = setTimeout(function () {
+    lateTimer = null;
+    if (Card.state === 'closed' || Card.state === 'closing' || lateShown) return;
+    if (status === 'typing') { latePending = true; return; }   // never show it before the main text is done
+    if (status === 'done') setLate(true);
+  }, LATE_DELAY);
+}
+
+/* replay: the main part stays shown (not retyped); the delayed parts hide until the next candlesOut */
+function hideLate() {
+  stopLateTimer();
+  latePending = false;
+  if (lateEl) setLate(false);
+}
+
 function reset() {
   stopTimer();
   removeCaret();
+  hideLate();
   status = 'idle';
   if (root) root.removeAttribute('data-msg');
   for (var i = 0; i < chars.length; i++) {
     chars[i].el.classList.remove('msg-on');
     chars[i].el.classList.remove('msg-wiggle');
   }
-  if (dateEl) dateEl.classList.remove('msg-on');
 }
 
 build();
@@ -2566,7 +2695,9 @@ Card.on('popupDone', function () {
   if (Card.state === 'closed' || Card.state === 'closing') return;
   reveal();
 });
-Card.on('closing', function () { stopTimer(); removeCaret(); });  // no typing while the card folds shut
+Card.on('candlesOut', scheduleLate);
+Card.on('replay', hideLate);
+Card.on('closing', function () { stopTimer(); stopLateTimer(); removeCaret(); });  // no typing while the card folds shut
 Card.on('closed', reset);
 
 /* ====================================================================== confetti */
@@ -2712,7 +2843,7 @@ try {
 /* finale.js - T5: blow interaction (mic or taps), finale sequence, replay.
    After 'popupDone' it shows #blow-ui ("Make a wish & blow!" + mic / tap buttons).
    The candles go out exactly once per round (mic blow, 3 taps, or 1 tap with reduced motion), then:
-   whoosh -> confetti + pop -> manatee slides in and munches -> sign-off + Replay -> 'finaleDone'.
+   whoosh -> confetti + pop -> manatee slides in and munches -> Replay -> 'finaleDone'.
    Replay emits 'replay' (popup.js relights and re-emits popupDone). 'closing' / 'closed' reset everything.
    All DOM is created here (inside #blow-ui and #finale); styles live in finale.css. */
 var Card = window.Card;
@@ -2815,7 +2946,7 @@ function build() {
   blowEl.setAttribute('role', 'group');
   blowEl.setAttribute('aria-label', 'Blow out the candles');
 
-  // --- finale layer: live region, manatee, sign-off ---
+  // --- finale layer: live region, manatee, replay ---
   finaleEl.textContent = '';
   ui.live = mk('p', 'fn-live sr-only');
   ui.live.setAttribute('role', 'status');
@@ -2835,16 +2966,12 @@ function build() {
   ui.art.appendChild(svg);
   ui.manatee.appendChild(ui.art);
 
-  ui.sign = mk('div', 'fn-sign');
-  ui.signLine = mk('p', 'fn-line');
   ui.replay = mk('button', 'bu-btn fn-replay', 'Replay 🔁');
   ui.replay.type = 'button';
-  ui.sign.appendChild(ui.signLine);
-  ui.sign.appendChild(ui.replay);
 
   finaleEl.appendChild(ui.live);
   finaleEl.appendChild(ui.manatee);
-  finaleEl.appendChild(ui.sign);
+  finaleEl.appendChild(ui.replay);
 
   ui.micBtn.addEventListener('click', function (e) { e.stopPropagation(); startMic(); });
   ui.tapBtn.addEventListener('click', function (e) {
@@ -3188,15 +3315,12 @@ function manateeIn() {
       }, munchAt + k * MUNCH_GAP);
     })(i);
   }
-  later(signOff, munchAt + 2 * MUNCH_GAP + 550);
+  later(finaleReady, munchAt + 2 * MUNCH_GAP + 550);
 }
 
-function signOff() {
-  if (!ui.sign) return;
-  var line = 'Happy birthday, ' + (CONFIG.to || '') + ' 💕 — ' + (CONFIG.from || '');
-  ui.signLine.textContent = line;
-  ui.sign.classList.add('is-on');
-  say(line);
+function finaleReady() {
+  if (!ui.replay) return;
+  ui.replay.classList.add('is-on');
   // keep keyboard users oriented: the focused blow button has just disappeared
   var a = doc.activeElement;
   if (!a || a === doc.body || (blowEl && blowEl.contains(a)) || (candlesEl && candlesEl.contains(a))) {
@@ -3219,8 +3343,7 @@ function resetUi() {
   mode = 'idle';
   if (blowEl) blowEl.hidden = true;
   if (ui.manatee) ui.manatee.classList.remove('is-in', 'is-slide', 'is-fade', 'is-munching');
-  if (ui.sign) ui.sign.classList.remove('is-on');
-  if (ui.signLine) ui.signLine.textContent = '';
+  if (ui.replay) ui.replay.classList.remove('is-on');
   if (ui.live) ui.live.textContent = '';
   if (ui.text) ui.text.textContent = '';
   setMeter(0);
