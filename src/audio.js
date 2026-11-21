@@ -1,15 +1,81 @@
 ; (function () {
   'use strict';
   try {
-    /* audio.js - T4: Web Audio sounds + mute toggle.
-       Card.audio = { kazoo(), whoosh(), pop(), munch(), stopAll(), muted (getter), toggleMute() }
+    /* audio.js - T4: Web Audio sounds + mute toggle, and the one place AudioContext lifecycle lives.
+       Card.audio = { kazoo(), whoosh(), pop(), munch(), stopAll(), muted (getter), toggleMute(),
+                      contextFactory(env), contexts }
        - No AudioContext exists until the 'opening' event (fired synchronously in the user gesture)
-         or until a sound is requested. Everything is synthesised: no files, no URLs. */
+         or until a sound is requested. Everything is synthesised: no files, no URLs.
+
+       contextFactory([env]) -> { supported(), create([options]), resume(ac), close(ac), releaseCapture() }
+         The AudioContext lifecycle, shared by the sound bus below and the Blow detector (each owns
+         its own context; see blow-detector.js for why the mic does not share the output context).
+         create(options)  new AC(options), falling back to new AC() (old Safari rejects options),
+                          then resume(); null when unsupported or construction fails. Call it
+                          synchronously inside a user gesture.
+         resume(ac)       resume() when 'suspended' or 'interrupted' (iOS); rejections swallowed.
+         close(ac)        close() once; rejections swallowed. Never call on a context you do not own.
+         releaseCapture() call after the mic tracks have stopped: iOS leaves the audio session in
+                          play-and-record (quiet / earpiece output); where navigator.audioSession
+                          exists (Safari 16.4+) kick it back via 'playback' -> 'auto'. No-op elsewhere.
+         env              overrides for tests: { AudioContext, audioSession }. Defaults are read
+                          from window at call time.
+       Loadable in Node: module.exports = { contextFactory, contexts }. */
+
+    function contextFactory(env) {
+      env = env || {};
+      function g() {return typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : {});}
+      function AC() {
+        if ('AudioContext' in env) return env.AudioContext;
+        return g().AudioContext || g().webkitAudioContext;
+      }
+      function session() {
+        if ('audioSession' in env) return env.audioSession;
+        var nav = g().navigator;
+        return nav ? nav.audioSession : undefined;
+      }
+      function swallow(p) {if (p && typeof p.catch === 'function') p.catch(function () { });}
+
+      function resume(ac) {
+        if (!ac || (ac.state !== 'suspended' && ac.state !== 'interrupted')) return;
+        try {if (typeof ac.resume === 'function') swallow(ac.resume());} catch (e) { /* ignore */}
+      }
+      function create(options) {
+        var Ctor = AC();
+        if (!Ctor) return null;
+        var ac = null;
+        if (options) {
+          try {ac = new Ctor(options);} catch (e) {ac = null;}
+        }
+        if (!ac) {
+          try {ac = new Ctor();} catch (e2) {return null;}
+        }
+        resume(ac);
+        return ac;
+      }
+      function close(ac) {
+        if (!ac || ac.state === 'closed' || typeof ac.close !== 'function') return;
+        try {swallow(ac.close());} catch (e) { /* ignore */}
+      }
+      function releaseCapture() {
+        var s = session();
+        if (!s || typeof s.type !== 'string') return;
+        // only undo what capture did; leave any other deliberate choice alone
+        if (s.type !== 'auto' && s.type !== 'play-and-record') return;
+        try {s.type = 'playback'; s.type = 'auto';} catch (e) { /* ignore */}
+      }
+      return {supported: function () {return !!AC();}, create: create, resume: resume, close: close,
+        releaseCapture: releaseCapture};
+    }
+    var contexts = contextFactory();
+
+    if (typeof module !== 'undefined' && module.exports) module.exports = {contextFactory: contextFactory, contexts: contexts};
+
     (function () {
       'use strict';
 
+      if (typeof window === 'undefined' || !window.Card) return;
       var Card = window.Card;
-      if (!Card) return;
 
       var MUTE_KEY = 'bday-muted';
       var MASTER_LEVEL = 0.65;
@@ -32,12 +98,8 @@
       // ---------- context ----------
       function ensureCtx() {
         if (!ctx) {
-          var AC = window.AudioContext || window.webkitAudioContext;
-          if (!AC) return null;
-          try {ctx = new AC({latencyHint: 'interactive'});}
-          catch (e) {
-            try {ctx = new AC();} catch (e2) {ctx = null; return null;}
-          }
+          ctx = contexts.create({latencyHint: 'interactive'});
+          if (!ctx) return null;
           try {
             master = ctx.createGain();
             master.gain.value = muted ? 0 : MASTER_LEVEL;
@@ -49,14 +111,10 @@
             comp.release.value = 0.2;
             master.connect(comp);
             comp.connect(ctx.destination);
-          } catch (e3) {ctx = null; master = null; return null;}
+          } catch (e3) {contexts.close(ctx); ctx = null; master = null; return null;}
+          return ctx; // create() already resumed it
         }
-        if (ctx.state === 'suspended' || ctx.state === 'interrupted') {
-          try {
-            var p = ctx.resume();
-            if (p && typeof p.catch === 'function') p.catch(function () { });
-          } catch (e4) { /* ignore */}
-        }
+        contexts.resume(ctx);
         return ctx;
       }
 
@@ -433,7 +491,9 @@
         munch: munch,
         stopAll: stopAll,
         get muted() {return muted;},
-        toggleMute: toggleMute
+        toggleMute: toggleMute,
+        contextFactory: contextFactory,
+        contexts: contexts
       };
 
       buildButton();

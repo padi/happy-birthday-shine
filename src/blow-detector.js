@@ -5,7 +5,7 @@
        Interface (window.Card.blowDetector in the browser, module.exports in Node):
 
          listen({ onStatus, onStrength, onBlow, onFail }, [opts]) -> { stop() }
-           Must be called inside the user gesture (the AudioContext is created synchronously).
+           Must be called inside the user gesture (the capture AudioContext is created synchronously).
            onStatus('requesting')  permission prompt is open
            onStatus('baseline')    mic is live, measuring the room for BASELINE_MS
            onStatus('listening')   baseline known, blow now
@@ -13,12 +13,27 @@
            onStrength(s)           every frame, smoothed strength 0..1
            onBlow({strength})      a blow was recognised (once); the mic is already shut down
            onFail(reason)          'unsupported' | 'denied' | 'error' | 'timeout' (MIC_MAX_MS); mic shut down
-           stop()                  idempotent; stops tracks, disconnects nodes, closes the context,
+           stop()                  idempotent; stops tracks, disconnects nodes, closes the capture
+                                   context, releases the iOS audio session (contexts.releaseCapture),
                                    discards a late getUserMedia result. No callbacks fire after stop().
            opts.level              level adapter factory (ac, stream) -> { read() -> dB, close() }
                                    default: adapters.analyser (AnalyserNode band level)
-           opts.env                platform overrides: mediaDevices, AudioContext, isSecureContext,
-                                   now, raf, caf, setTimeout, clearTimeout
+           opts.env                platform overrides: mediaDevices, AudioContext, audioSession,
+                                   contexts, isSecureContext, now, raf, caf, setTimeout, clearTimeout.
+                                   `contexts` is the AudioContext lifecycle adapter from audio.js
+                                   (contextFactory); by default it is built from env.AudioContext /
+                                   env.audioSession, so tests can inject either a fake constructor
+                                   or a whole fake factory.
+
+         Context ownership: the detector gets its context from audio.js's factory (one place for the
+         create / resume / interrupted / close quirks) but owns a separate *capture* context rather
+         than borrowing the sound bus's output context. iOS Safari ties playback volume and routing
+         to when a context was created relative to capture (WebKit 218012: a context created before
+         capture stays quiet; 230902 / 326286: output moves to the earpiece; 282939: the session can
+         stay play-and-record after tracks stop), and the documented fixes are device-dependent. A
+         private capture context keeps the output context's latencyHint / sampleRate untouched and
+         lets the detector close everything it opened. The analyser is never connected to a
+         destination (no feedback).
 
          classifier([t0]) -> { push(db, nowMs) -> { strength, blown, phase } }
            The pure classification core used by listen(): ambient baseline over BASELINE_MS,
@@ -41,13 +56,6 @@
     function noop() { }
     function clamp01(v) {return v < 0 ? 0 : (v > 1 ? 1 : v);}
 
-    function closeCtx(ac) {
-      if (!ac) return;
-      try {
-        var p = ac.close();
-        if (p && typeof p.catch === 'function') p.catch(noop);
-      } catch (e) { /* ignore */}
-    }
     function stopStream(stream) {
       if (!stream) return;
       try {
@@ -55,11 +63,16 @@
         for (var i = 0; i < tracks.length; i++) {try {tracks[i].stop();} catch (e) { /* ignore */} }
       } catch (e2) { /* ignore */}
     }
-    function resumeCtx(ac) {
-      if (ac.state === 'suspended' && typeof ac.resume === 'function') {
-        var rp = ac.resume();
-        if (rp && typeof rp.catch === 'function') rp.catch(noop);
+
+    // the AudioContext lifecycle lives in audio.js; found on Card.audio in the browser, required in Node
+    function contextFactoryImpl() {
+      if (typeof window !== 'undefined' && window.Card && window.Card.audio && window.Card.audio.contextFactory) {
+        return window.Card.audio.contextFactory;
       }
+      if (typeof require === 'function') {
+        try {return require('./audio.js').contextFactory;} catch (e) { /* not available */}
+      }
+      return null;
     }
 
     /* ====================================================================== classification core */
@@ -113,7 +126,6 @@
         src.connect(an);                     // not connected to the speakers: no feedback
         var buf = new Float32Array(an.frequencyBinCount);
         var bytes = new Uint8Array(an.frequencyBinCount);
-        resumeCtx(ac);
       } catch (e) {
         disconnect();
         throw e;
@@ -167,6 +179,7 @@
       return {
         mediaDevices: nav ? nav.mediaDevices : undefined,
         AudioContext: g.AudioContext || g.webkitAudioContext,
+        audioSession: nav ? nav.audioSession : undefined,
         isSecureContext: g.isSecureContext,
         now: function () {
           return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
@@ -184,14 +197,20 @@
       var env = defaultEnv();
       if (opts.env) for (var k in opts.env) if (Object.prototype.hasOwnProperty.call(opts.env, k)) env[k] = opts.env[k];
       var makeLevel = opts.level || analyserLevel;
+      var contexts = env.contexts;
+      if (!contexts) {
+        var factory = contextFactoryImpl();
+        contexts = factory ? factory({AudioContext: env.AudioContext, audioSession: env.audioSession}) : null;
+      }
 
       var alive = true, ac = null, stream = null, level = null, raf = 0, timers = [];
+      var captured = false;                 // getUserMedia handed us a stream (the session switched)
       var handle = {stop: teardown};
 
       function fire(name, arg) {if (typeof cb[name] === 'function') cb[name](arg);}
       function fail(reason) {teardown(); fire('onFail', reason);}
 
-      // stop all tracks, disconnect nodes, close the context. Safe to call any time.
+      // stop all tracks, disconnect our nodes, close our capture context. Safe to call any time.
       function teardown() {
         if (!alive) return;
         alive = false;
@@ -200,21 +219,23 @@
         raf = 0;
         stopStream(stream);
         if (level) level.close();
-        closeCtx(ac);
+        if (contexts) contexts.close(ac);
+        if (captured) releaseSession();
         stream = level = ac = null;
+      }
+      function releaseSession() {
+        captured = false;
+        try {contexts.releaseCapture();} catch (e) { /* ignore */}
       }
 
       var md = env.mediaDevices;
-      var AC = env.AudioContext;
-      if (!md || typeof md.getUserMedia !== 'function' || env.isSecureContext === false || !AC) {
+      if (!md || typeof md.getUserMedia !== 'function' || env.isSecureContext === false ||
+        !contexts || !contexts.supported()) {
         fail('unsupported');
         return handle;
       }
-      // create the context inside the click (iOS / autoplay policies)
-      try {
-        ac = new AC();
-        resumeCtx(ac);
-      } catch (e) {ac = null;}
+      // create the capture context inside the click (iOS / autoplay policies)
+      ac = contexts.create();
       if (!ac) {fail('unsupported'); return handle;}
 
       fire('onStatus', 'requesting');
@@ -232,8 +253,10 @@
       req.then(function (s) {
         if (!alive) {                        // stopped while the prompt was open: discard the late stream
           stopStream(s);
+          if (contexts) releaseSession();
           return;
         }
+        captured = true;
         begin(s);
       }, function () {
         if (!alive) return;

@@ -276,3 +276,118 @@ test('analyser adapter: getByteFrequencyData fallback maps bytes onto min..max d
   const lvl = det.adapters.analyser(ctx, fakeStream());
   assert.ok(Math.abs(lvl.read() - -30) < 1e-6);
 });
+
+/* ---------------------------------------------------------------- context ownership (audio.js factory seam) */
+// a fake contexts adapter (the shape of audio.js contextFactory()) that records every lifecycle call
+function fakeContexts(log) {
+  const made = [];
+  const c = {
+    made, calls: log,
+    supported: () => true,
+    create(options) {const ac = {state: 'running', options}; made.push(ac); log.push(['create', ac]); return ac;},
+    resume(ac) {log.push(['resume', ac]);},
+    close(ac) {log.push(['close', ac]);},
+    releaseCapture() {log.push(['release']);}
+  };
+  return c;
+}
+
+async function ownedSession(dbs, outputCtx) {
+  const clock = fakeClock();
+  const log = [];
+  const contexts = fakeContexts(log);
+  const media = deferredMedia();
+  const events = {blow: 0, fail: []};
+  const stream = fakeStream();
+  // record the moment tracks stop, relative to the lifecycle calls
+  stream.tracks[0].stop = function () {this.stopped = true; log.push(['tracks-stopped']);};
+  const handle = det.listen({onBlow: () => events.blow++, onFail: (r) => events.fail.push(r)}, {
+    level: det.adapters.scripted(dbs),
+    env: {mediaDevices: media, contexts, isSecureContext: true, now: clock.now, raf: clock.raf, caf: clock.caf,
+      setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout}
+  });
+  media.calls[0].resolve(stream);
+  await flush();
+  return {clock, log, contexts, events, handle, stream, outputCtx};
+}
+const closes = (log) => log.filter((e) => e[0] === 'close').map((e) => e[1]);
+
+for (const [name, run] of [
+  ['stop()', (s) => s.handle.stop()],
+  ['a blow', (s) => s.clock.advance(3000)],
+  ['a failure (timeout)', (s) => s.clock.advance(T.MIC_MAX_MS + 100)]
+]) {
+  test('context ownership: on ' + name + ' tracks stop, only the detector\'s own context closes, then the session is released', async () => {
+    const output = {state: 'running', name: 'sound bus'};       // a context the detector must never touch
+    const s = await ownedSession(name === 'a blow' ? profile(-60, -20, [[600, 2000]]) : () => -60, output);
+    assert.strictEqual(s.contexts.made.length, 1, 'exactly one context created, synchronously in listen()');
+    run(s);
+    if (name === 'a blow') assert.strictEqual(s.events.blow, 1);
+    if (name.startsWith('a failure')) assert.deepStrictEqual(s.events.fail, ['timeout']);
+    assert.ok(s.stream.tracks[0].stopped, 'tracks stopped');
+    assert.deepStrictEqual(closes(s.log), [s.contexts.made[0]], 'closes its own capture context, once');
+    assert.ok(!closes(s.log).includes(output), 'never closes a context it did not create');
+    const order = s.log.map((e) => e[0]).filter((k) => k !== 'resume');
+    assert.deepStrictEqual(order, ['create', 'tracks-stopped', 'close', 'release'], 'session released after tracks stop');
+    s.handle.stop();                                          // idempotent: nothing more happens
+    assert.strictEqual(s.log.length, order.length);
+  });
+}
+
+test('context ownership: created inside the gesture, before getUserMedia resolves', () => {
+  const log = [];
+  const contexts = fakeContexts(log);
+  const media = deferredMedia();
+  const h = det.listen({}, {env: {mediaDevices: media, contexts, isSecureContext: true}});
+  assert.strictEqual(contexts.made.length, 1, 'context exists synchronously');
+  assert.strictEqual(media.calls.length, 1);
+  h.stop();
+});
+
+test('context ownership: denied permission closes the context but does not touch the audio session', async () => {
+  const log = [];
+  const contexts = fakeContexts(log);
+  const media = deferredMedia();
+  det.listen({}, {env: {mediaDevices: media, contexts, isSecureContext: true}});
+  media.calls[0].reject(new Error('NotAllowedError'));
+  await flush();
+  assert.deepStrictEqual(log.map((e) => e[0]), ['create', 'close']);
+});
+
+test('context ownership: a late stream after stop() is stopped and the session released', async () => {
+  const log = [];
+  const contexts = fakeContexts(log);
+  const media = deferredMedia();
+  const h = det.listen({}, {env: {mediaDevices: media, contexts, isSecureContext: true}});
+  h.stop();
+  const late = fakeStream();
+  media.calls[0].resolve(late);
+  await flush();
+  assert.ok(late.tracks[0].stopped);
+  assert.deepStrictEqual(log.map((e) => e[0]), ['create', 'close', 'release']);
+});
+
+test('context ownership: unsupported when the factory cannot make a context', () => {
+  const fails = [];
+  const contexts = Object.assign(fakeContexts([]), {supported: () => true, create: () => null});
+  det.listen({onFail: (r) => fails.push(r)}, {env: {mediaDevices: deferredMedia(), contexts, isSecureContext: true}});
+  det.listen({onFail: (r) => fails.push(r)},
+    {env: {mediaDevices: deferredMedia(), contexts: Object.assign(fakeContexts([]), {supported: () => false})}});
+  assert.deepStrictEqual(fails, ['unsupported', 'unsupported']);
+});
+
+test('default seam: env.AudioContext + env.audioSession go through audio.js contextFactory', async () => {
+  const ctxs = [];
+  const session = {type: 'play-and-record'};
+  const clock = fakeClock();
+  const media = deferredMedia();
+  const h = det.listen({}, {level: det.adapters.scripted([-60]), env: {
+    mediaDevices: media, AudioContext: fakeAudioContext(ctxs), audioSession: session, isSecureContext: true,
+    now: clock.now, raf: clock.raf, caf: clock.caf, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout}});
+  media.calls[0].resolve(fakeStream());
+  await flush();
+  h.stop();
+  assert.strictEqual(ctxs.length, 1);
+  assert.ok(ctxs[0].closed, 'own context closed through the factory');
+  assert.strictEqual(session.type, 'auto', 'session kicked back after capture');
+});
