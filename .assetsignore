@@ -11,3 +11,7 @@ node_modules
 .git
 .DS_Store
 .npmrc
+
+# tests and package manifest (dev only)
+tests
+package.json

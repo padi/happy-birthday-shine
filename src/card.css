@@ -1,0 +1,2354 @@
+/* ---- src/core.css ---- */
+/* core.css - page, book-style card layout, 3D open/close, controls.
+Hooks for other modules:
+- body[data-state] and #card[data-state] are closed|opening|open|closing
+- #inside is the (clipped) right page; #popup, #message, #blow-ui, #finale are absolutely positioned layers in it
+- .ctl-btn is the shared look for buttons appended to #controls
+- --w / --h are the card width/height; fonts: --font-hand, --font-body */
+
+:root {
+  --pink: #ffd9e8;
+  --pink-deep: #ff8fb8;
+  --mint: #d6f5e6;
+  --butter: #fff1b8;
+  --cream: #fffaf2;
+  --ink: #5a3a4c;
+  --ink-soft: #7d566a;
+
+  --w: max(220px, min(88vw, 380px));
+  --h: calc(var(--w) * 5.5 / 4);
+
+  --open-ms: 1100ms;
+  --close-ms: 750ms;
+  --fade-ms: 350ms;
+
+  --font-hand: "Marker Felt", "Comic Sans MS", "Chalkboard SE", "Bradley Hand", cursive;
+  --font-body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+/* keep the whole card on screen on short viewports (landscape phones etc.) */
+@supports (height: 100dvh) {
+  :root {
+    --w: max(220px, min(88vw, 380px, calc((100dvh - 110px) * 4 / 5.5)));
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  font-family: var(--font-body);
+  color: var(--ink);
+  -webkit-tap-highlight-color: transparent;
+  background:
+    radial-gradient(60vmax 60vmax at 12% 8%, rgba(255, 214, 229, 0.95), transparent 60%),
+    radial-gradient(55vmax 55vmax at 92% 18%, rgba(214, 245, 230, 0.95), transparent 60%),
+    radial-gradient(70vmax 70vmax at 50% 105%, rgba(255, 241, 184, 0.95), transparent 60%),
+    #fff6f9;
+  background-attachment: fixed;
+}
+
+/* faint polka dots on the page */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle, rgba(255, 143, 184, 0.16) 0 3px, transparent 4px) 0 0 / 46px 46px,
+    radial-gradient(circle, rgba(120, 200, 165, 0.14) 0 2.5px, transparent 3.5px) 23px 23px / 46px 46px;
+}
+
+.sr-only {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+:focus-visible {
+  outline: 3px solid #ff5d9b;
+  outline-offset: 3px;
+}
+
+/* ---------- stage ---------- */
+#stage {
+  position: relative;
+  z-index: 1;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 56px 0 24px;
+}
+
+#scene {
+  position: relative;
+  width: var(--w);
+  height: var(--h);
+  perspective: 1800px;
+  transform-origin: 50% 90%;
+}
+
+/* the whole spread: shifted right on wide screens so the open book is centred */
+#card {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  transform: translateX(var(--shift, 0px));
+  transition: transform var(--open-ms) cubic-bezier(0.3, 0.8, 0.3, 1);
+}
+
+body[data-state="closing"] #card {
+  transition: transform var(--close-ms) cubic-bezier(0.5, 0, 0.3, 1);
+}
+
+@media (min-width: 800px) {
+
+  body[data-state="opening"] #card,
+  body[data-state="open"] #card {
+    --shift: calc(var(--w) / 2);
+  }
+}
+
+/* ---------- cover ---------- */
+#front {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: 4px 18px 18px 4px;
+  transform-origin: 0 50%;
+  transform-style: preserve-3d;
+  transform: translateZ(1px) rotateY(0deg);
+  transition: transform var(--close-ms) cubic-bezier(0.5, 0, 0.3, 1);
+  cursor: pointer;
+}
+
+/* springy overshoot: control point above 1 swings the cover past -180deg and back */
+body[data-state="opening"] #front,
+body[data-state="open"] #front {
+  transform: translateZ(1px) rotateY(-180deg);
+  transition: transform var(--open-ms) cubic-bezier(0.22, 1.7, 0.38, 1);
+  pointer-events: none;
+  cursor: default;
+}
+
+body[data-state="closing"] #front {
+  transition: transform var(--close-ms) cubic-bezier(0.5, 0, 0.3, 1);
+  pointer-events: none;
+  cursor: default;
+}
+
+.face {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+}
+
+.front-face {
+  border-radius: 4px 18px 18px 4px;
+  background: linear-gradient(160deg, var(--pink), #ffeef4 60%, var(--butter));
+  box-shadow: 0 10px 28px rgba(150, 80, 110, 0.22), 0 2px 6px rgba(150, 80, 110, 0.16);
+}
+
+/* spine highlight on the cover */
+.front-face::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(120, 60, 90, 0.16), rgba(255, 255, 255, 0.28) 3%, transparent 8%);
+}
+
+/* inside of the cover: pastel paper (hinge is on the right of this face in its own coordinates) */
+.back-face {
+  transform: rotateY(180deg);
+  border-radius: 18px 4px 4px 18px;
+  background:
+    linear-gradient(270deg, rgba(150, 90, 120, 0.22), transparent 9%),
+    radial-gradient(circle at 25% 25%, rgba(255, 255, 255, 0.75) 0 2px, transparent 3px) 0 0 / 24px 24px,
+    radial-gradient(circle at 75% 75%, rgba(255, 143, 184, 0.28) 0 2px, transparent 3px) 0 0 / 24px 24px,
+    linear-gradient(135deg, #ffe3ee, var(--butter) 55%, var(--mint));
+  box-shadow: 0 8px 22px rgba(150, 80, 110, 0.18);
+}
+
+/* ---------- inside page ---------- */
+#inside {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 4px 18px 18px 4px;
+  background:
+    radial-gradient(circle, rgba(255, 143, 184, 0.10) 0 1.5px, transparent 2.5px) 0 0 / 22px 22px,
+    var(--cream);
+  box-shadow: 0 10px 28px rgba(150, 80, 110, 0.20), 0 2px 6px rgba(150, 80, 110, 0.14);
+}
+
+/* fold shading next to the spine */
+#inside::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(190, 130, 155, 0.26), transparent 8%);
+}
+
+#popup,
+#message,
+#blow-ui,
+#finale {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 1;
+}
+
+#popup {
+  top: 0;
+  height: 56%;
+}
+
+#message {
+  top: 56%;
+  bottom: 0;
+  padding: 4% 8% 6%;
+}
+
+#blow-ui {
+  bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  z-index: 3;
+}
+
+#finale {
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* ---------- hint ---------- */
+#hint {
+  margin: 22px 0 0;
+  font-family: var(--font-hand);
+  font-size: 1.1rem;
+  color: var(--ink-soft);
+  letter-spacing: 0.02em;
+  transition: opacity 0.3s ease, visibility 0s linear 0.3s;
+  animation: hint-bob 2.4s ease-in-out infinite;
+}
+
+body:not([data-state="closed"]) #hint {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* ---------- controls ---------- */
+#controls {
+  position: fixed;
+  top: max(10px, env(safe-area-inset-top));
+  right: max(10px, env(safe-area-inset-right));
+  z-index: 50;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.ctl-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0 14px;
+  font: 600 14px/1 var(--font-body);
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.88);
+  border: 2px solid rgba(255, 143, 184, 0.55);
+  border-radius: 999px;
+  box-shadow: 0 3px 10px rgba(150, 80, 110, 0.16);
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.ctl-btn:hover {
+  background: #fff;
+}
+
+.ctl-btn:active {
+  transform: scale(0.96);
+}
+
+/* ---------- motion ---------- */
+@keyframes hint-bob {
+
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes card-wobble {
+  0% {
+    transform: rotate(0deg) scale(1);
+  }
+
+  18% {
+    transform: rotate(-2.2deg) scale(1.025);
+  }
+
+  38% {
+    transform: rotate(1.8deg) scale(1.01);
+  }
+
+  58% {
+    transform: rotate(-1deg) scale(1);
+  }
+
+  78% {
+    transform: rotate(0.5deg);
+  }
+
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes card-settle {
+  0% {
+    transform: scale(1);
+  }
+
+  35% {
+    transform: scale(0.985, 1.01);
+  }
+
+  70% {
+    transform: scale(1.006, 0.996);
+  }
+
+  100% {
+    transform: scale(1);
+  }
+}
+
+body[data-state="opening"] #scene {
+  animation: card-wobble 0.95s ease-out 0.1s;
+}
+
+body[data-state="closing"] #scene {
+  animation: card-settle 0.5s ease-out 0.4s;
+}
+
+/* peek at the inside when hovering the cover (pointer devices only).
+The cover is lifted ~10px in Z while tilted: at only 1px the 3D depth sort against the
+coplanar #inside page clips a strip off the cover's left (hinge) edge. */
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  body[data-state="closed"] #front:hover {
+    transform: translateZ(10px) rotateY(-9deg);
+    transition: transform 0.35s cubic-bezier(0.22, 1.5, 0.4, 1);
+  }
+}
+
+/* narrow screens: the opened cover swings off the left edge, so just fade it away */
+@media (max-width: 799px) {
+
+  body[data-state="opening"] #front,
+  body[data-state="open"] #front {
+    opacity: 0;
+    transition:
+      transform var(--open-ms) cubic-bezier(0.22, 1.7, 0.38, 1),
+      opacity 0.3s linear 0.6s;
+  }
+
+  body[data-state="closing"] #front {
+    opacity: 1;
+    transition:
+      transform var(--close-ms) cubic-bezier(0.5, 0, 0.3, 1),
+      opacity 0.15s linear;
+  }
+}
+
+/* reduced motion: no wobble, no 3D swing, no bobbing - just a simple fade */
+@media (prefers-reduced-motion: reduce) {
+
+  #hint,
+  body[data-state="opening"] #scene,
+  body[data-state="closing"] #scene {
+    animation: none;
+  }
+
+  #card,
+  body[data-state="closing"] #card {
+    --shift: 0px;
+    transform: none;
+    transition: none;
+  }
+
+  #front,
+  body[data-state="opening"] #front,
+  body[data-state="open"] #front,
+  body[data-state="closing"] #front {
+    transform: translateZ(1px);
+  }
+
+  #front {
+    opacity: 1;
+    visibility: visible;
+    transition: opacity var(--fade-ms) linear;
+  }
+
+  body[data-state="opening"] #front,
+  body[data-state="open"] #front {
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity var(--fade-ms) linear, visibility 0s linear var(--fade-ms);
+  }
+
+  body[data-state="closing"] #front {
+    opacity: 1;
+    visibility: visible;
+    transition: opacity var(--fade-ms) linear;
+  }
+}
+
+
+/* ---- src/front.css ---- */
+/* front.css - cover title + manatee baker scene (T1). Everything is scoped under #front.
+The BASE styles are the static "nice frame" (frosting done, blob on snout, guilty eyes at the viewer).
+Animations are only switched on under prefers-reduced-motion: no-preference. */
+
+#front .fr-art {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+/* ---------- title ---------- */
+#front .fr-title {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 5.5%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 0;
+  font-family: var(--font-hand);
+  font-weight: 700;
+  line-height: 0.92;
+  letter-spacing: 0.01em;
+  -webkit-text-stroke: calc(var(--w) * 0.0125) var(--ink);
+  paint-order: stroke fill;
+  text-shadow: calc(var(--w) * 0.012) calc(var(--w) * 0.014) 0 rgba(255, 143, 184, 0.55);
+}
+
+#front .fr-l {
+  display: block;
+  white-space: nowrap;
+  transform-origin: 50% 60%;
+}
+
+#front .fr-l1 {
+  font-size: calc(var(--w) * 0.13);
+  color: #fff;
+  transform: rotate(-4deg) translateX(-16%);
+}
+
+#front .fr-l2 {
+  font-size: calc(var(--w) * 0.162);
+  color: var(--butter);
+  transform: rotate(-1.5deg);
+  margin-top: calc(var(--w) * 0.006);
+}
+
+#front .fr-l3 {
+  font-size: calc(var(--w) * 0.2);
+  color: #b8f2d6;
+  transform: rotate(2deg) translateX(9%);
+  margin-top: calc(var(--w) * 0.004);
+}
+
+/* ---------- scene ---------- */
+#front .fr-scene {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+  display: block;
+}
+
+/* frosting: static = fully drawn */
+#front .fx path {
+  stroke-dasharray: 100 120;
+  stroke-dashoffset: 0;
+}
+
+#front .fx .o {
+  stroke: #d1407f;
+  stroke-width: 9;
+}
+
+#front .fx .i {
+  stroke: #fff7fb;
+  stroke-width: 5;
+}
+
+#front .fx3 .o {
+  stroke-width: 10;
+}
+
+#front .fx3 .i {
+  stroke-width: 6;
+}
+
+/* manatee parts (static frame) */
+#front .mb-smile {
+  opacity: 0;
+}
+
+#front .mb-gulp {
+  opacity: 1;
+}
+
+#front .mb-pupil {
+  transform: translate(0px, 0.4px);
+}
+
+#front .mb-eye,
+#front .mb-muzzle,
+#front .mb-blob-s,
+#front .mb-sweat,
+#front .mb-oops,
+#front .mb-topper,
+#front .fr-sparkle,
+#front .mb-tail {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+}
+
+#front .fr-topper {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+}
+
+#front .mb-tail {
+  transform-origin: 92% 70%;
+}
+
+#front .fr-flag {
+  transform-box: fill-box;
+  transform-origin: 50% 0%;
+}
+
+/* ---------- motion ---------- */
+@media (prefers-reduced-motion: no-preference) {
+  #front .fr-l1 {
+    animation: fr-bob 3.2s ease-in-out infinite;
+  }
+
+  #front .fr-l2 {
+    animation: fr-bob 3.2s ease-in-out -1.1s infinite;
+  }
+
+  #front .fr-l3 {
+    animation: fr-bob 3.2s ease-in-out -2.2s infinite;
+  }
+
+  /* frosting strokes draw on, hold, fade, reset (loop 6s) */
+  #front .fx path {
+    animation: 6s linear infinite;
+  }
+
+  #front .fx1 path {
+    animation-name: fr-fx1;
+  }
+
+  #front .fx2 path {
+    animation-name: fr-fx2;
+  }
+
+  #front .fx3 path {
+    animation-name: fr-fx3;
+  }
+
+  #front .fr-topper {
+    animation: fr-topper 6s linear infinite;
+  }
+
+  #front .mb-arm-back,
+  #front .mb-bag {
+    animation: fr-bag 6s ease-in-out infinite;
+  }
+
+  #front .mb-head {
+    animation: fr-head 6s ease-in-out infinite;
+  }
+
+  #front .mb-pupil {
+    animation: fr-pupil 6s ease-in-out infinite;
+  }
+
+  #front .mb-eye {
+    animation: fr-eye 6s ease-in-out infinite;
+  }
+
+  #front .mb-brows {
+    animation: fr-brows 6s linear infinite;
+  }
+
+  #front .mb-smile {
+    animation: fr-smile 6s linear infinite;
+  }
+
+  #front .mb-gulp {
+    animation: fr-gulp 6s linear infinite;
+  }
+
+  #front .mb-muzzle {
+    animation: fr-muzzle 6s ease-out infinite;
+  }
+
+  #front .mb-sweat {
+    animation: fr-sweat 6s ease-in infinite;
+  }
+
+  #front .mb-oops {
+    animation: fr-oops 6s ease-out infinite;
+  }
+
+  #front .mb-blob {
+    animation: fr-blob-vis 6s linear infinite;
+  }
+
+  #front .mb-blob-x {
+    animation: fr-blob-x 6s linear infinite;
+  }
+
+  #front .mb-blob-y {
+    animation: fr-blob-y 6s linear infinite;
+  }
+
+  #front .mb-blob-s {
+    animation: fr-blob-s 6s ease-out infinite;
+  }
+
+  #front .mb-tail {
+    animation: fr-wag 1.8s ease-in-out infinite;
+  }
+
+  #front .fr-flag {
+    animation: fr-sway 3.4s ease-in-out var(--d, 0s) infinite;
+  }
+
+  #front .fr-sparkle {
+    animation: fr-twinkle 2.6s ease-in-out infinite;
+  }
+
+  #front .fr-sparkle.s2 {
+    animation-delay: -0.5s;
+  }
+
+  #front .fr-sparkle.s3 {
+    animation-delay: -1.1s;
+    animation-duration: 3s;
+  }
+
+  #front .fr-sparkle.s4 {
+    animation-delay: -1.7s;
+  }
+
+  #front .fr-sparkle.s5 {
+    animation-delay: -2.1s;
+    animation-duration: 3.4s;
+  }
+
+  #front .fr-sparkle.s6 {
+    animation-delay: -0.9s;
+    animation-duration: 2.9s;
+  }
+
+  #front .fr-sparkle.s7 {
+    animation-delay: -1.4s;
+  }
+}
+
+@keyframes fr-bob {
+
+  0%,
+  100% {
+    translate: 0 0;
+  }
+
+  50% {
+    translate: 0 calc(var(--w) * -0.008);
+  }
+}
+
+@keyframes fr-fx1 {
+
+  0%,
+  2% {
+    stroke-dashoffset: 104;
+    opacity: 1;
+  }
+
+  22%,
+  86% {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+
+  94% {
+    stroke-dashoffset: 0;
+    opacity: 0;
+  }
+
+  94.1%,
+  100% {
+    stroke-dashoffset: 104;
+    opacity: 0;
+  }
+}
+
+@keyframes fr-fx2 {
+
+  0%,
+  20% {
+    stroke-dashoffset: 104;
+    opacity: 1;
+  }
+
+  38%,
+  86% {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+
+  94% {
+    stroke-dashoffset: 0;
+    opacity: 0;
+  }
+
+  94.1%,
+  100% {
+    stroke-dashoffset: 104;
+    opacity: 0;
+  }
+}
+
+@keyframes fr-fx3 {
+
+  0%,
+  36% {
+    stroke-dashoffset: 104;
+    opacity: 1;
+  }
+
+  47%,
+  86% {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+
+  94% {
+    stroke-dashoffset: 0;
+    opacity: 0;
+  }
+
+  94.1%,
+  100% {
+    stroke-dashoffset: 104;
+    opacity: 0;
+  }
+}
+
+@keyframes fr-topper {
+
+  0%,
+  45% {
+    opacity: 0;
+    transform: scale(0.2);
+  }
+
+  49% {
+    opacity: 1;
+    transform: scale(1.25);
+  }
+
+  52%,
+  86% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  94%,
+  100% {
+    opacity: 0;
+    transform: scale(1);
+  }
+}
+
+/* bag hand: wiggles while piping, recoils on the splat, then hangs still */
+@keyframes fr-bag {
+  0% {
+    transform: translate(0, 0);
+  }
+
+  4% {
+    transform: translate(2px, -1px);
+  }
+
+  8% {
+    transform: translate(0, 1.5px);
+  }
+
+  12% {
+    transform: translate(2px, -1px);
+  }
+
+  16% {
+    transform: translate(4px, 0);
+  }
+
+  21% {
+    transform: translate(5px, -2px);
+  }
+
+  26% {
+    transform: translate(3px, 1px);
+  }
+
+  31% {
+    transform: translate(6px, -2px);
+  }
+
+  36% {
+    transform: translate(4px, 1px);
+  }
+
+  41% {
+    transform: translate(6px, -3px);
+  }
+
+  46% {
+    transform: translate(7px, -2px);
+  }
+
+  50% {
+    transform: translate(-4px, 3px);
+  }
+
+  58% {
+    transform: translate(0, 1px);
+  }
+
+  100% {
+    transform: translate(0, 0);
+  }
+}
+
+@keyframes fr-head {
+
+  0%,
+  48% {
+    transform: translate(0, 0);
+  }
+
+  53% {
+    transform: translate(2px, 1px);
+  }
+
+  56% {
+    transform: translate(-3px, 3px);
+  }
+
+  60% {
+    transform: translate(1px, -1px);
+  }
+
+  65%,
+  100% {
+    transform: translate(0, 0);
+  }
+}
+
+@keyframes fr-pupil {
+
+  0%,
+  52% {
+    transform: translate(3.2px, 1.8px);
+  }
+
+  57%,
+  70% {
+    transform: translate(0px, 0.4px);
+  }
+
+  73% {
+    transform: translate(3.2px, 1.8px);
+  }
+
+  78%,
+  90% {
+    transform: translate(0px, 0.4px);
+  }
+
+  97%,
+  100% {
+    transform: translate(3.2px, 1.8px);
+  }
+}
+
+@keyframes fr-eye {
+
+  0%,
+  55% {
+    transform: scale(1);
+  }
+
+  58% {
+    transform: scale(1.14);
+  }
+
+  66%,
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes fr-brows {
+
+  0%,
+  55% {
+    opacity: 0;
+  }
+
+  58%,
+  86% {
+    opacity: 1;
+  }
+
+  92%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes fr-smile {
+
+  0%,
+  55% {
+    opacity: 1;
+  }
+
+  56%,
+  94% {
+    opacity: 0;
+  }
+
+  96%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes fr-gulp {
+
+  0%,
+  55% {
+    opacity: 0;
+    transform: translate(0, 0);
+  }
+
+  56% {
+    opacity: 1;
+    transform: translate(0, 0);
+  }
+
+  62% {
+    transform: translate(0.8px, 0);
+  }
+
+  65% {
+    transform: translate(-0.8px, 0);
+  }
+
+  68%,
+  94% {
+    opacity: 1;
+    transform: translate(0, 0);
+  }
+
+  96%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes fr-muzzle {
+
+  0%,
+  54% {
+    transform: scale(1);
+  }
+
+  57% {
+    transform: scale(1.1, 0.86);
+  }
+
+  62% {
+    transform: scale(0.97, 1.04);
+  }
+
+  68%,
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes fr-sweat {
+
+  0%,
+  58% {
+    opacity: 0;
+    transform: translate(0, -4px) scale(0.6);
+  }
+
+  61% {
+    opacity: 1;
+    transform: translate(0, 0) scale(1);
+  }
+
+  70% {
+    opacity: 1;
+    transform: translate(0, 1px) scale(1);
+  }
+
+  78% {
+    opacity: 0.9;
+    transform: translate(1px, 14px) scale(1);
+  }
+
+  82%,
+  100% {
+    opacity: 0;
+    transform: translate(1px, 18px) scale(0.9);
+  }
+}
+
+@keyframes fr-oops {
+
+  0%,
+  62% {
+    opacity: 0;
+    transform: scale(0.5) rotate(-6deg);
+  }
+
+  66% {
+    opacity: 1;
+    transform: scale(1.18) rotate(2deg);
+  }
+
+  69%,
+  86% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+
+  91%,
+  100% {
+    opacity: 0;
+    transform: scale(1);
+  }
+}
+
+/* the splat: launched from the bag tip at 50%, lands on the snout at ~56% */
+@keyframes fr-blob-vis {
+
+  0%,
+  49.5% {
+    opacity: 0;
+  }
+
+  50%,
+  86% {
+    opacity: 1;
+  }
+
+  93%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes fr-blob-x {
+
+  0%,
+  50% {
+    transform: translateX(81px);
+  }
+
+  56%,
+  100% {
+    transform: translateX(0);
+  }
+}
+
+@keyframes fr-blob-y {
+
+  0%,
+  50% {
+    transform: translateY(55px);
+    animation-timing-function: cubic-bezier(0.3, 0.7, 0.5, 1);
+  }
+
+  53% {
+    transform: translateY(-34px);
+    animation-timing-function: cubic-bezier(0.5, 0, 0.8, 0.4);
+  }
+
+  56%,
+  100% {
+    transform: translateY(0);
+  }
+}
+
+@keyframes fr-blob-s {
+
+  0%,
+  50% {
+    transform: scale(0.45);
+  }
+
+  56% {
+    transform: scale(0.95, 1.05);
+  }
+
+  58% {
+    transform: scale(1.2, 0.8);
+  }
+
+  62%,
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes fr-wag {
+
+  0%,
+  100% {
+    transform: rotate(-5deg);
+  }
+
+  50% {
+    transform: rotate(6deg);
+  }
+}
+
+@keyframes fr-twinkle {
+
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.65) rotate(0deg);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.1) rotate(14deg);
+  }
+}
+
+@keyframes fr-sway {
+
+  0%,
+  100% {
+    transform: rotate(-4deg);
+  }
+
+  50% {
+    transform: rotate(4deg);
+  }
+}
+
+
+/* ---- src/popup.css ---- */
+/* popup.css - the wobbly 3-tier pop-up cake. Everything is scoped under #popup.
+State classes on #popup (set by popup.js): .is-up (tiers risen), .is-folding, .rm (reduced motion).
+Flicker vars (set by Card.cake.flicker): --bend (deg, 0..55), --shrink (0..1). */
+
+#popup {
+  --ink: #8a4a66;
+  --bend: 0;
+  --shrink: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+#popup .cake-svg {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  display: block;
+}
+
+/* ---------- plate ---------- */
+#popup .plate-shadow {
+  fill: rgba(150, 80, 110, 0.18);
+}
+
+#popup .plate {
+  fill: #fff;
+  stroke: var(--ink);
+  stroke-width: 3;
+}
+
+#popup .plate-in {
+  fill: #ffe3ee;
+  stroke: rgba(138, 74, 102, 0.35);
+  stroke-width: 1.5;
+}
+
+/* ---------- cake art ---------- */
+#popup .cake-lean,
+#popup .tier,
+#popup .flame-wrap,
+#popup .flame-bend,
+#popup .flame-idle,
+#popup .glow-c,
+#popup .spark,
+#popup .smoke path,
+#popup .smoke-tiny {
+  transform-box: fill-box;
+}
+
+#popup .cake-lean {
+  transform-origin: 50% 100%;
+}
+
+#popup .tier {
+  transform-origin: 50% 100%;
+  transform: scale(1, 0);
+  /* flat until the card opens */
+}
+
+#popup .body,
+#popup .frost,
+#popup .stick,
+#popup .plate,
+#popup .pennant {
+  stroke: var(--ink);
+  stroke-width: 3;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+#popup .frost {
+  stroke-width: 2.6;
+}
+
+#popup .squig {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.85);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+#popup .dots circle {
+  fill: rgba(255, 255, 255, 0.8);
+}
+
+#popup .stripes {
+  fill: none;
+  stroke: rgba(210, 160, 60, 0.45);
+  stroke-width: 3.2;
+  stroke-linecap: round;
+}
+
+#popup .sprinkles path {
+  fill: none;
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+/* the cake's worried little face */
+#popup .eye {
+  fill: var(--ink);
+}
+
+#popup .glint {
+  fill: #fff;
+}
+
+#popup .cheek {
+  fill: #ff9fc3;
+  opacity: 0.7;
+}
+
+#popup .mouth {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+#popup .sweat {
+  fill: #bfe6f7;
+  stroke: var(--ink);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+/* wonky toothpick flag */
+#popup .pole {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+#popup .pennant {
+  fill: #ff9fc3;
+  stroke-width: 2.4;
+}
+
+/* ---------- candles ---------- */
+#popup #candles {
+  pointer-events: auto;
+  cursor: pointer;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#popup #candles .hit {
+  fill: transparent;
+  stroke: none;
+}
+
+#popup #candles .focus-ring {
+  fill: none;
+  stroke: #ff5d9b;
+  stroke-width: 3;
+  stroke-dasharray: 7 6;
+  opacity: 0;
+  pointer-events: none;
+}
+
+#popup #candles:focus-visible .focus-ring {
+  opacity: 1;
+}
+
+#popup .stick {
+  fill: #fffaf0;
+  stroke-width: 2.4;
+}
+
+#popup .wick {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+
+/* flame: wrap = lit/unlit pop, bend = flicker() input, idle = gentle dance */
+#popup .flame-wrap {
+  transform-origin: 50% 100%;
+  transform: scale(0);
+  transition: transform 0.12s ease-in;
+}
+
+#popup .candle.on .flame-wrap {
+  transform: scale(1);
+  transition: transform 0.4s cubic-bezier(0.3, 1.9, 0.5, 1);
+}
+
+#popup .flame-bend {
+  transform-origin: 50% 100%;
+  transform: rotate(calc(var(--bend, 0) * 1deg)) scale(calc(1 - var(--shrink, 0) * 0.35), calc(1 - var(--shrink, 0) * 0.6));
+  transition: transform 0.09s linear;
+}
+
+#popup .flame-idle {
+  transform-origin: 50% 100%;
+  animation: pc-flicker 1.1s ease-in-out infinite;
+}
+
+#popup .candle.c2 .flame-idle {
+  animation-duration: 0.9s;
+  animation-delay: -0.4s;
+}
+
+#popup .candle.c3 .flame-idle {
+  animation-duration: 1.3s;
+  animation-delay: -0.7s;
+}
+
+#popup .flame-i {
+  fill: #fff6c4;
+}
+
+#popup .glow {
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+#popup .candle.on .glow {
+  opacity: calc(1 - var(--shrink, 0) * 0.65);
+}
+
+#popup .glow-c {
+  transform-origin: 50% 50%;
+  animation: pc-glow 1.3s ease-in-out infinite;
+}
+
+/* fizzle: a failed flare, spark and a puff of smoke */
+#popup .candle.fizz .flame-wrap {
+  animation: pc-fizz 0.5s ease-out;
+}
+
+#popup .spark {
+  opacity: 0;
+  transform-origin: 50% 50%;
+}
+
+#popup .spark path {
+  fill: none;
+  stroke: #ffb703;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+
+#popup .candle.fizz .spark {
+  animation: pc-spark 0.45s ease-out;
+}
+
+#popup .smoke-tiny,
+#popup .smoke path {
+  fill: none;
+  stroke: #a99aa6;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  opacity: 0;
+}
+
+#popup .smoke-tiny {
+  transform-origin: 50% 100%;
+}
+
+#popup .smoke-tiny path {
+  fill: none;
+  stroke: #a99aa6;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+}
+
+#popup .candle.fizz .smoke-tiny {
+  animation: pc-puff 0.95s 0.12s ease-out both;
+}
+
+/* blowOut: wisps of smoke */
+#popup .smoke path {
+  transform-origin: 50% 100%;
+}
+
+#popup .candle.out .smoke path {
+  animation: pc-smoke 1.5s ease-out both;
+}
+
+#popup .candle.out .smoke .w2 {
+  animation-delay: 0.12s;
+  --sx: -7px;
+}
+
+#popup .candle.out .smoke .w3 {
+  animation-delay: 0.26s;
+  --sx: 9px;
+}
+
+/* ---------- opening: tiers spring up, then the cake leans ---------- */
+#popup.is-up .tier {
+  animation: pc-rise 0.62s cubic-bezier(0.3, 0.7, 0.4, 1) both;
+}
+
+#popup.is-up .tier.t1 {
+  animation-delay: 0s;
+}
+
+#popup.is-up .tier.t2 {
+  animation-delay: 0.17s;
+}
+
+#popup.is-up .tier.t3 {
+  animation-delay: 0.34s;
+}
+
+#popup.is-up .cake-lean {
+  animation: pc-lean 0.9s 0.82s ease-in-out both;
+}
+
+/* closing: fold flat, top tier first */
+#popup.is-folding .tier {
+  animation: pc-fold 0.3s cubic-bezier(0.5, 0, 0.8, 0.4) both;
+}
+
+#popup.is-folding .tier.t3 {
+  animation-delay: 0s;
+}
+
+#popup.is-folding .tier.t2 {
+  animation-delay: 0.07s;
+}
+
+#popup.is-folding .tier.t1 {
+  animation-delay: 0.14s;
+}
+
+@keyframes pc-rise {
+  0% {
+    transform: scale(1.05, 0);
+  }
+
+  55% {
+    transform: scale(0.95, 1.2);
+  }
+
+  76% {
+    transform: scale(1.03, 0.94);
+  }
+
+  90% {
+    transform: scale(0.995, 1.025);
+  }
+
+  100% {
+    transform: scale(1, 1);
+  }
+}
+
+@keyframes pc-fold {
+  0% {
+    transform: scale(1, 1);
+  }
+
+  100% {
+    transform: scale(1.06, 0);
+  }
+}
+
+@keyframes pc-lean {
+  0% {
+    transform: rotate(0deg) skewX(0deg);
+  }
+
+  22% {
+    transform: rotate(-8deg) skewX(3deg);
+  }
+
+  46% {
+    transform: rotate(5deg) skewX(-2deg);
+  }
+
+  70% {
+    transform: rotate(-5.5deg) skewX(1.5deg);
+  }
+
+  100% {
+    transform: rotate(-3.5deg) skewX(0.5deg);
+  }
+}
+
+@keyframes pc-flicker {
+
+  0%,
+  100% {
+    transform: scale(1, 1) rotate(-1.5deg);
+  }
+
+  25% {
+    transform: scale(0.95, 1.07) rotate(1.8deg);
+  }
+
+  50% {
+    transform: scale(1.04, 0.94) rotate(-0.6deg);
+  }
+
+  75% {
+    transform: scale(0.97, 1.05) rotate(2.2deg);
+  }
+}
+
+@keyframes pc-glow {
+
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.12);
+  }
+}
+
+@keyframes pc-fizz {
+  0% {
+    transform: scale(0);
+  }
+
+  25% {
+    transform: scale(0.75, 0.9);
+  }
+
+  50% {
+    transform: scale(0.25, 0.35);
+  }
+
+  65% {
+    transform: scale(0.5, 0.6);
+  }
+
+  100% {
+    transform: scale(0);
+  }
+}
+
+@keyframes pc-spark {
+  0% {
+    opacity: 1;
+    transform: scale(0.3);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(1.5);
+  }
+}
+
+@keyframes pc-puff {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) scale(0.6);
+  }
+
+  25% {
+    opacity: 0.8;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate(3px, -14px) scale(1.1);
+  }
+}
+
+@keyframes pc-smoke {
+  0% {
+    opacity: 0;
+    transform: translate(0, 4px) scale(0.6);
+  }
+
+  20% {
+    opacity: 0.8;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate(var(--sx, 3px), -18px) scale(1.2);
+  }
+}
+
+/* ---------- reduced motion: no bounce, no lean animation, no flicker ---------- */
+#popup.rm .tier,
+#popup.rm.is-up .tier,
+#popup.rm.is-up .tier.t1,
+#popup.rm.is-up .tier.t2,
+#popup.rm.is-up .tier.t3 {
+  animation: none;
+  transform: none;
+  opacity: 1;
+  transition: opacity 0.2s linear;
+}
+
+#popup.rm .tier {
+  opacity: 0;
+}
+
+#popup.rm.is-up .cake-lean {
+  animation: none;
+  transform: rotate(-2.5deg);
+}
+
+#popup.rm.is-folding .tier,
+#popup.rm.is-folding .tier.t1,
+#popup.rm.is-folding .tier.t2,
+#popup.rm.is-folding .tier.t3 {
+  animation: none;
+  transform: none;
+  opacity: 0;
+}
+
+#popup.rm .flame-idle,
+#popup.rm .glow-c {
+  animation: none;
+}
+
+#popup.rm .flame-wrap,
+#popup.rm .candle.on .flame-wrap,
+#popup.rm .glow,
+#popup.rm .flame-bend {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+  #popup .tier,
+  #popup.is-up .tier,
+  #popup.is-up .tier.t1,
+  #popup.is-up .tier.t2,
+  #popup.is-up .tier.t3 {
+    animation: none;
+    transform: none;
+    transition: opacity 0.2s linear;
+  }
+
+  #popup .tier {
+    opacity: 0;
+  }
+
+  #popup.is-up .tier {
+    opacity: 1;
+  }
+
+  #popup.is-up .cake-lean {
+    animation: none;
+    transform: rotate(-2.5deg);
+  }
+
+  #popup.is-folding .tier {
+    opacity: 0;
+  }
+
+  #popup .flame-idle,
+  #popup .glow-c {
+    animation: none;
+  }
+
+  #popup .flame-wrap,
+  #popup .candle.on .flame-wrap,
+  #popup .glow,
+  #popup .flame-bend {
+    transition: none;
+  }
+}
+
+
+/* ---- src/message.css ---- */
+/* message.css - the handwritten note on the lower part of the inside page, plus confetti.
+Everything is scoped under #message (confetti uses the .bdc- prefix). */
+
+#message {
+  /* ~5% of card width, clamped so it never drops below 14px and stays tidy on wide cards */
+  font-size: clamp(14px, calc(var(--w) * 0.047), 17px);
+  line-height: 1.4;
+  padding: 1% 7% 4%;
+  color: var(--ink);
+  /* #5a3a4c on cream: about 9:1 */
+  overflow: hidden;
+  overflow-wrap: break-word;
+  visibility: hidden;
+  opacity: 0;
+}
+
+#message[data-msg="on"] {
+  visibility: visible;
+  opacity: 1;
+  transition: opacity 0.35s ease;
+}
+
+#message p {
+  margin: 0;
+}
+
+#message .msg-greet {
+  font-family: var(--font-hand);
+  font-size: 1em;
+  color: var(--ink-soft);
+  /* #7d566a on cream: about 6:1 */
+  margin-bottom: 0.25em;
+}
+
+#message .msg-body {
+  font-family: var(--font-body);
+  font-weight: 500;
+  letter-spacing: 0.005em;
+  text-wrap: pretty;
+}
+
+/* typewriter: every character takes its space up front (no reflow), it just becomes visible */
+#message .msg-ch {
+  opacity: 0;
+}
+
+#message .msg-ch.msg-on {
+  opacity: 1;
+}
+
+#message .msg-w {
+  white-space: nowrap;
+}
+
+/* the emphasised sentence: slightly bolder + deeper rose, wiggles once when typed */
+#message .msg-em {
+  display: inline-block;
+  font-weight: 700;
+  color: #a02a5a;
+  /* on cream: about 6.7:1 */
+}
+
+#message .msg-em.msg-wiggle {
+  animation: msg-wiggle 0.7s ease-in-out both;
+  animation-delay: calc(var(--i, 0) * 28ms);
+}
+
+@keyframes msg-wiggle {
+  0% {
+    transform: translateY(0) rotate(0);
+  }
+
+  25% {
+    transform: translateY(-0.22em) rotate(-5deg);
+  }
+
+  50% {
+    transform: translateY(0.06em) rotate(4deg);
+  }
+
+  75% {
+    transform: translateY(-0.08em) rotate(-2deg);
+  }
+
+  100% {
+    transform: translateY(0) rotate(0);
+  }
+}
+
+/* blinking pen caret that rides along with the typing */
+#message .msg-caret {
+  display: inline-block;
+  position: relative;
+  width: 0;
+  height: 1em;
+  vertical-align: text-bottom;
+  pointer-events: none;
+}
+
+#message .msg-caret::after {
+  content: "";
+  position: absolute;
+  left: 1px;
+  top: 0.08em;
+  bottom: 0;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--pink-deep);
+  animation: msg-blink 0.7s steps(2, start) infinite;
+}
+
+@keyframes msg-blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+/* sign-off row: "Love, Marc" and the small date share a line when there is room */
+#message .msg-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0 0.8em;
+  margin-top: 0.45em;
+}
+
+#message .msg-sign {
+  font-family: var(--font-hand);
+  font-size: 1.3em;
+  line-height: 1.25;
+  font-weight: 700;
+  color: #a02a5a;
+}
+
+#message .msg-date {
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+
+/* The parts held back until the candles are out ("Happy birthday!", the sign-off, the date).
+They keep their layout space (visibility + opacity, never display:none), so nothing shifts
+when they appear. JS also toggles aria-hidden. Hidden state: quick fade, then visibility off. */
+#message .msg-late,
+#message .msg-sign,
+#message .msg-date {
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.2s ease, visibility 0s linear 0.2s;
+}
+
+#message .msg-late.msg-on,
+#message .msg-sign.msg-on,
+#message .msg-date.msg-on {
+  visibility: visible;
+  opacity: 1;
+  transition: opacity 0.5s ease, visibility 0s linear 0s;
+}
+
+#message .msg-sign.msg-on {
+  transition-delay: 0.7s, 0.7s;
+}
+
+/* "Love, Marc" fades in after the pop... */
+#message .msg-date.msg-on {
+  transition-delay: 1.05s, 1.05s;
+}
+
+/* ...and the date after that */
+
+/* "Happy birthday!": bold rose, each letter pops in with a little overshoot */
+#message .msg-late .msg-ch {
+  display: inline-block;
+  opacity: 1;
+  font-weight: 700;
+  color: #a02a5a;
+  /* on cream: about 6.7:1 */
+}
+
+#message .msg-late.msg-on .msg-ch.msg-pop {
+  animation: msg-pop 0.75s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation-delay: calc(var(--i, 0) * 45ms);
+}
+
+@keyframes msg-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(0.5em) scale(0.3) rotate(-10deg);
+  }
+
+  45% {
+    opacity: 1;
+    transform: translateY(-0.28em) scale(1.35) rotate(6deg);
+  }
+
+  70% {
+    transform: translateY(0.04em) scale(0.94) rotate(-3deg);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1) rotate(0);
+  }
+}
+
+/* confetti canvas (created on demand, removed again after a few seconds) */
+.bdc-confetti {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* reduced motion: a plain fade, no wiggle, no caret */
+@media (prefers-reduced-motion: reduce) {
+  #message .msg-em.msg-wiggle {
+    animation: none;
+  }
+
+  #message .msg-caret {
+    display: none;
+  }
+
+  #message .msg-ch {
+    transition: none;
+  }
+
+  /* delayed parts: simple, quick fades, no pop */
+  #message .msg-late.msg-on .msg-ch.msg-pop {
+    animation: none;
+  }
+
+  #message .msg-late.msg-on,
+  #message .msg-sign.msg-on,
+  #message .msg-date.msg-on {
+    transition-duration: 0.4s, 0s;
+  }
+
+  #message .msg-sign.msg-on {
+    transition-delay: 0.15s, 0.15s;
+  }
+
+  #message .msg-date.msg-on {
+    transition-delay: 0.3s, 0.3s;
+  }
+}
+
+
+/* ---- src/finale.css ---- */
+/* finale.css - blow prompt (#blow-ui) and the finale (#finale: manatee, replay).
+Everything is scoped under #blow-ui / #finale. Layout hooks come from core.css:
+#blow-ui sits at the bottom of the inside page (flex column), #finale is a click-through full-page layer. */
+
+/* ---------- shared button look (>= 44px tall, visible focus ring) ---------- */
+#blow-ui .bu-btn,
+#finale .bu-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 44px;
+  min-width: 44px;
+  padding: 0 16px;
+  margin: 0;
+  font: 700 15px/1.1 var(--font-body);
+  color: var(--ink);
+  background: #fff;
+  border: 2px solid var(--pink-deep);
+  border-radius: 999px;
+  box-shadow: 0 3px 0 rgba(209, 64, 127, 0.28);
+  cursor: pointer;
+  position: relative;
+  -webkit-appearance: none;
+  appearance: none;
+  touch-action: manipulation;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background-color 0.2s ease;
+}
+
+#blow-ui .bu-btn:hover,
+#finale .bu-btn:hover {
+  background: #fff3f8;
+}
+
+#blow-ui .bu-btn:active,
+#finale .bu-btn:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 rgba(209, 64, 127, 0.28);
+}
+
+#blow-ui .bu-btn:focus-visible,
+#finale .bu-btn:focus-visible {
+  outline: 3px solid #ff5d9b;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 6px #fff, 0 3px 0 6px rgba(209, 64, 127, 0.28);
+}
+
+/* primary: the mic button (white on #b8316d is about 6:1) */
+#blow-ui .bu-mic {
+  color: #fff;
+  background: #b8316d;
+  border-color: #8f2354;
+  box-shadow: 0 3px 0 #8f2354;
+}
+
+#blow-ui .bu-mic:hover {
+  background: #a82a62;
+}
+
+#blow-ui .bu-mic.is-busy {
+  cursor: progress;
+  background: #8f2354;
+}
+
+/* ---------- layout bands (shared by the blow UI and the finale) ----------
+--fp   = padding between the page edge and the prompt / buttons / Replay
+        (>= 18px, ~19px on the narrowest card, scaled with the card width).
+--lift = how far the cake band and the note are raised, so the bottom strip can hold a 44px button
+        with --fp below it and still stay clear of the note's "Love, Marc / date" row (whose space
+        is always reserved). The cake art shrinks a little to fit (it is bottom-anchored). */
+#inside {
+  --fp: clamp(18px, calc(var(--w) * 0.06), 26px);
+  --lift: calc(var(--w) * 0.062);
+}
+
+#popup {
+  top: calc(var(--fp) + var(--w) * 0.022);
+  height: calc(56% - var(--lift) - var(--fp) - var(--w) * 0.022);
+}
+
+#message {
+  top: calc(56% - var(--lift));
+}
+
+/* ---------- blow UI ----------
+Full-page, click-through layer: the wish prompt is pinned --fp below the top edge (the band above the
+flames), the button row --fp above the bottom edge. */
+#blow-ui {
+  top: 0;
+  bottom: 0;
+  justify-content: flex-end;
+  gap: 0;
+  padding: 0 10px var(--fp);
+  pointer-events: none;
+  /* only the buttons take clicks */
+}
+
+#blow-ui .bu-btns {
+  pointer-events: auto;
+}
+
+#blow-ui .bu-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: var(--fp);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 10px;
+  min-height: 18px;
+}
+
+#blow-ui .bu-text {
+  font: 700 14px/1.2 var(--font-hand);
+  color: #a02a5a;
+  /* about 6.7:1 on cream */
+  text-align: center;
+  text-wrap: balance;
+}
+
+#blow-ui .bu-text.is-long {
+  font-size: 13px;
+  line-height: 1.15;
+}
+
+#blow-ui .bu-btns {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+
+/* the little live meter: a bar along the bottom edge inside the mic button */
+#blow-ui .bu-meter {
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  bottom: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.28);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+#blow-ui .bu-meter i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, #ffe27a, #ffb703);
+  transform-origin: 0 50%;
+  transform: scaleX(0);
+  transition: transform 0.06s linear;
+}
+
+#blow-ui .bu-mic.is-busy .bu-label {
+  position: relative;
+  top: -2px;
+}
+
+/* entrance */
+#blow-ui.is-in {
+  animation: bu-rise 0.5s cubic-bezier(0.3, 1.5, 0.5, 1) both;
+}
+
+#blow-ui.is-in[data-mode="ask"] .bu-mic {
+  animation: bu-pulse 1.8s ease-in-out 0.8s infinite;
+}
+
+@keyframes bu-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.96);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes bu-pulse {
+
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.05);
+  }
+}
+
+/* ---------- finale ---------- */
+#finale .fn-manatee {
+  position: absolute;
+  left: 2%;
+  bottom: calc(44.5% + var(--lift));
+  /* stands on the lower edge of the cake area */
+  width: 48%;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(-130%);
+  will-change: transform;
+}
+
+#finale .fn-art {
+  transform-origin: 50% 100%;
+  filter: drop-shadow(0 4px 0 rgba(150, 80, 110, 0.18));
+}
+
+#finale .fn-art svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+/* slide in from the left with a bouncy overshoot */
+#finale .fn-manatee.is-slide {
+  visibility: visible;
+  opacity: 1;
+  transform: none;
+  transition: transform 0.8s cubic-bezier(0.3, 1.45, 0.45, 1);
+}
+
+/* reduced motion (class set from JS): no slide, just fade in place */
+#finale .fn-manatee.is-fade {
+  visibility: visible;
+  opacity: 1;
+  transform: none;
+  transition: opacity 0.4s ease;
+}
+
+/* munch: three quick squash-and-nod chews */
+#finale .fn-manatee.is-slide.is-munching .fn-art {
+  animation: fn-munch 0.4s ease-in-out 3;
+}
+
+@keyframes fn-munch {
+
+  0%,
+  100% {
+    transform: translateY(0) rotate(0) scale(1, 1);
+  }
+
+  30% {
+    transform: translateY(3px) rotate(2.5deg) scale(1.03, 0.94);
+  }
+
+  65% {
+    transform: translateY(-4px) rotate(-2deg) scale(0.99, 1.04);
+  }
+}
+
+/* Replay (bottom strip, where the buttons were) */
+#finale .fn-replay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: var(--fp);
+  margin: 0 auto;
+  width: fit-content;
+  opacity: 0;
+  visibility: hidden;
+  translate: 0 12px;
+  pointer-events: none;
+}
+
+#finale .fn-replay.is-on {
+  opacity: 1;
+  visibility: visible;
+  translate: none;
+  pointer-events: auto;
+  transition: opacity 0.5s ease, translate 0.6s cubic-bezier(0.3, 1.4, 0.5, 1), transform 0.12s ease, box-shadow 0.12s ease, background-color 0.2s ease;
+}
+
+/* ---------- reduced motion: fades only ---------- */
+@media (prefers-reduced-motion: reduce) {
+
+  #blow-ui.is-in,
+  #blow-ui.is-in[data-mode="ask"] .bu-mic {
+    animation: none;
+  }
+
+  #blow-ui .bu-btn,
+  #finale .bu-btn,
+  #blow-ui .bu-meter i {
+    transition: none;
+  }
+
+  #finale .fn-manatee,
+  #finale .fn-manatee.is-slide {
+    transform: none;
+  }
+
+  #finale .fn-manatee.is-fade,
+  #finale .fn-manatee.is-slide {
+    visibility: visible;
+    opacity: 1;
+    transition: opacity 0.4s ease;
+  }
+
+  #finale .fn-manatee.is-slide.is-munching .fn-art {
+    animation: none;
+  }
+
+  #finale .fn-replay.is-on {
+    translate: none;
+    transition: opacity 0.4s ease;
+  }
+}
