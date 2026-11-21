@@ -20,3 +20,4 @@ package.json
 .claude
 .gitignore
 wrangler.jsonc
+.github

@@ -1,0 +1,45 @@
+# On every push to main, publish the card (index.html + src/) to GitHub Pages.
+# Cloudflare Pages (happy-birthday-shine.pages.dev) deploys itself through
+# its own Git connection to this repo, so it is not handled here.
+name: Deploy card to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-card
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test
+        run: npm test
+      - name: Stage site (only what the card needs)
+        run: |
+          mkdir -p dist
+          cp index.html dist/
+          cp -R src dist/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  github-pages:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
