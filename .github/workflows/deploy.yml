@@ -1,0 +1,68 @@
+# On every push to main, publish the card (index.html + src/) to
+# GitHub Pages and to Cloudflare Pages (happy-birthday-shine.pages.dev).
+name: Deploy card
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-card
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test
+        run: npm test
+      - name: Stage site (only what the card needs)
+        run: |
+          mkdir -p dist
+          cp index.html dist/
+          cp -R src dist/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  github-pages:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  cloudflare-pages:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Skip if Cloudflare secrets are missing
+        if: env.CLOUDFLARE_API_TOKEN == '' || env.CLOUDFLARE_ACCOUNT_ID == ''
+        run: echo "::warning::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID not set; skipping Cloudflare Pages deploy."
+      - name: Download site
+        if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: github-pages
+          path: artifact
+      - name: Deploy to Cloudflare Pages
+        if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
+        run: |
+          mkdir dist && tar -xf artifact/artifact.tar -C dist
+          npx --yes wrangler@4.166.0 pages deploy dist \
+            --project-name happy-birthday-shine --branch main \
+            --commit-hash "$GITHUB_SHA" --commit-message "$(git log -1 --pretty=%s 2>/dev/null || echo "$GITHUB_SHA")"
