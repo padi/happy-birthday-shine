@@ -15,3 +15,8 @@ node_modules
 # tests and package manifest (dev only)
 tests
 package.json
+
+# repo/tooling files, not part of the card
+.claude
+.gitignore
+wrangler.jsonc
