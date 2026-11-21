@@ -1,12 +1,13 @@
 ; (function () {
   'use strict';
   try {
-    /* finale.js - T5: blow interaction (mic or taps), finale sequence, replay.
-       After 'popupDone' it shows #blow-ui ("Make a wish & blow!" + mic / tap buttons).
-       The candles go out exactly once per round (mic blow, 3 taps, or 1 tap with reduced motion), then:
-       whoosh -> confetti + pop -> manatee slides in and munches -> Replay -> 'finaleDone'.
-       Replay emits 'replay' (popup.js relights and re-emits popupDone). 'closing' / 'closed' reset everything.
-       All DOM is created here (inside #blow-ui and #finale); styles live in finale.css. */
+    /* finale.js - blow interaction (mic or taps) and the finale's beats of a Round (src/round.js owns when).
+       Exposes Card.finale = { showBlowUi(onBlown), candlesOut(), celebrate(), manateeIn(rm), munch(k),
+       replayReady(onReplay), reset() }.
+       showBlowUi shows #blow-ui ("Make a wish & blow!" + mic / tap buttons); a mic blow, 3 taps (1 with
+       reduced motion) call onBlown - the Round makes sure the candles go out exactly once per Round.
+       The Replay button calls onReplay. Local timers only: tap flicker decay, the live-region nudge.
+       All DOM is created here (inside #blow-ui and #finale); styles live in card.css. */
     var Card = window.Card;
     var CONFIG = window.CONFIG || {};
     var doc = document;
@@ -19,7 +20,6 @@
     // ---------- tuning ----------
     var TAPS_NEEDED = 3;          // puffs to put the candles out (1 with reduced motion)
     // mic tuning (baseline, threshold, window, hint / max-open timers) lives in blow-detector.js
-    var T_CONFETTI = 500, T_MANATEE = 1200, MUNCH_GAP = 400;
 
     var TXT = {
       ask: 'Make a wish & blow! 🎂',
@@ -32,8 +32,7 @@
     };
 
     // ---------- state ----------
-    var armed = false;            // true between popupDone and candles out
-    var outDone = false;          // the "exactly once per round" guard
+    var armed = false;            // true between showBlowUi and candles out: taps / mic count
     var mode = 'idle';            // idle | ask | requesting | listening | tap | out
     var micOk = true;             // false after a denial / error / missing support
     var taps = 0;
@@ -42,6 +41,8 @@
     var timers = [];
     var tapTimers = [];
     var mic = null;               // Card.blowDetector session handle { stop() } while the mic is open
+    var onBlown = null;           // the Round's callbacks for this round
+    var onReplay = null;
 
     var ui = {};                  // element refs
 
@@ -129,7 +130,11 @@
       });
       ui.replay.addEventListener('click', function (e) {
         e.stopPropagation();
-        replay();
+        // keep focus on the cake: the Replay button is about to hide
+        var focusWasIn = doc.activeElement === ui.replay;
+        var cb = onReplay;
+        if (cb) cb();
+        if (focusWasIn && candlesEl) {try {candlesEl.focus({preventScroll: true});} catch (e2) { /* ignore */} }
       });
 
       // tapping / clicking / keyboard on the candles
@@ -201,7 +206,7 @@
     function needed() {return reduced() ? 1 : TAPS_NEEDED;}
 
     function puff() {
-      if (!armed || outDone) return;
+      if (!armed) return;
       taps++;
       clearList(tapTimers);
       tapLevel = 0.9;
@@ -217,7 +222,7 @@
         tapTimers.push(id);
       });
       if (taps >= needed()) {
-        extinguish();
+        blown();
         return;
       }
       var left = needed() - taps;
@@ -230,7 +235,7 @@
     function switchToTap(failed) {
       stopMic();                  // also abandons any pending permission prompt
       if (failed) micOk = false;
-      if (!armed || outDone) return;
+      if (!armed) return;
       mode = 'tap';
       render();
       setText(taps > 0 ? ('Puff! ' + (needed() - taps) + ' more 💨') : TXT.tap);
@@ -247,7 +252,7 @@
     }
 
     function startMic() {
-      if (!armed || outDone || mode === 'listening' || mode === 'requesting') return;
+      if (!armed || mode === 'listening' || mode === 'requesting') return;
       var det = Card.blowDetector;
       if (!det || typeof det.listen !== 'function') {switchToTap(true); return;}
       mic = det.listen({
@@ -273,79 +278,76 @@
           applyFlicker();
           Card.emit('blow', {strength: v});
         },
-        onBlow: function () {extinguish();},
+        onBlow: function () {blown();},
         // denied / unsupported / error -> tap only; MIC_MAX timeout -> tap but keep the mic button
         onFail: function (reason) {switchToTap(reason !== 'timeout');}
       });
     }
 
-    /* ====================================================================== candles out + finale */
-    function extinguish() {
-      if (outDone || !armed) return;
-      outDone = true;
+    /* ====================================================================== beats */
+    function blown() {
+      if (!armed) return;
+      var cb = onBlown;
+      if (cb) cb();
+    }
+
+    // blow UI off, whoosh (the Round blows the cake out and emits 'candlesOut')
+    function candlesOut() {
       armed = false;
+      onBlown = null;
       stopMic();                               // always: tracks stopped, nodes disconnected
       clearList(tapTimers);
       tapLevel = 0;
       mode = 'out';
       if (blowEl) blowEl.hidden = true;
       setText(TXT.out);
-
-      if (Card.cake && Card.cake.blowOut) Card.cake.blowOut();
       if (Card.audio && Card.audio.whoosh) Card.audio.whoosh();
-      Card.emit('candlesOut');
-
-      later(function () {
-        if (typeof Card.confetti === 'function') {
-          var host = (popupEl && popupEl.querySelector('.cake-svg')) || popupEl || blowEl;
-          var r = host.getBoundingClientRect();
-          Card.confetti(r.left + r.width / 2, r.top + r.height * 0.55);
-        }
-        if (Card.audio && Card.audio.pop) Card.audio.pop();
-      }, T_CONFETTI);
-
-      later(manateeIn, T_MANATEE);
     }
 
-    function manateeIn() {
+    // confetti from the cake + pop
+    function celebrate() {
+      if (typeof Card.confetti === 'function') {
+        var host = (popupEl && popupEl.querySelector('.cake-svg')) || popupEl || blowEl;
+        var r = host.getBoundingClientRect();
+        Card.confetti(r.left + r.width / 2, r.top + r.height * 0.55);
+      }
+      if (Card.audio && Card.audio.pop) Card.audio.pop();
+    }
+
+    // slide (fade with reduced motion) in; the Round times the munches against the entrance
+    function manateeIn(rm) {
       if (!ui.manatee) return;
-      var rm = reduced();
+      if (rm === undefined) rm = reduced();
       ui.manatee.classList.remove('is-in', 'is-munching');
       void ui.manatee.offsetWidth;
       ui.manatee.classList.add(rm ? 'is-fade' : 'is-slide');
       ui.manatee.classList.add('is-in');
-
-      var slide = rm ? 450 : 800;
-      var munchAt = slide - 50;
-      for (var i = 0; i < 3; i++) {
-        (function (k) {
-          later(function () {
-            if (k === 0) ui.manatee.classList.add('is-munching');
-            if (Card.audio && Card.audio.munch) Card.audio.munch();
-          }, munchAt + k * MUNCH_GAP);
-        })(i);
-      }
-      later(finaleReady, munchAt + 2 * MUNCH_GAP + 550);
     }
 
-    function finaleReady() {
+    function munch(k) {
+      if (!ui.manatee) return;
+      if (k === 0) ui.manatee.classList.add('is-munching');
+      if (Card.audio && Card.audio.munch) Card.audio.munch();
+    }
+
+    function replayReady(cb) {
       if (!ui.replay) return;
+      onReplay = cb || null;
       ui.replay.classList.add('is-on');
       // keep keyboard users oriented: the focused blow button has just disappeared
       var a = doc.activeElement;
       if (!a || a === doc.body || (blowEl && blowEl.contains(a)) || (candlesEl && candlesEl.contains(a))) {
         try {ui.replay.focus({preventScroll: true});} catch (e) { /* ignore */}
       }
-      Card.emit('finaleDone');
     }
 
-    /* ====================================================================== rounds */
     function resetUi() {
       stopMic();
       clearList(timers);
       clearList(tapTimers);
       armed = false;
-      outDone = false;
+      onBlown = null;
+      onReplay = null;
       taps = 0;
       tapLevel = 0;
       micStrength = 0;
@@ -358,11 +360,11 @@
       setMeter(0);
     }
 
-    function showBlowUi() {
+    function showBlowUi(cb) {
       if (!blowEl || !ui.text) return;
-      if (Card.state !== 'open') return;
       resetUi();
       armed = true;
+      onBlown = cb || null;
       mode = 'ask';
       render();
       setText(TXT.ask);
@@ -372,20 +374,17 @@
       blowEl.classList.add('is-in');
     }
 
-    function replay() {
-      // hides the finale, resets the blow UI, then popup.js relights and re-emits 'popupDone'
-      var focusWasIn = !!(ui.replay && doc.activeElement === ui.replay);
-      resetUi();
-      Card.emit('replay');
-      if (focusWasIn && candlesEl) {try {candlesEl.focus({preventScroll: true});} catch (e) { /* ignore */} }
-    }
-
     if (build()) {
       resetUi();
-      Card.on('popupDone', showBlowUi);
-      Card.on('replay', function () {if (mode !== 'idle' || outDone || armed) resetUi();});
-      Card.on('closing', resetUi);
-      Card.on('closed', resetUi);
+      Card.finale = {
+        showBlowUi: showBlowUi,
+        candlesOut: candlesOut,
+        celebrate: celebrate,
+        manateeIn: manateeIn,
+        munch: munch,
+        replayReady: replayReady,
+        reset: resetUi
+      };
       // a hidden tab must not keep the mic open
       doc.addEventListener('visibilitychange', function () {
         if (doc.hidden && (mode === 'listening' || mode === 'requesting')) {

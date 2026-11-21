@@ -1,9 +1,11 @@
 ; (function () {
   'use strict';
   try {
-    /* popup.js - pop-up cake: spring up on 'opened', light the candles (3rd one fizzles), emit 'popupDone'.
-       Implements Card.cake = { flicker(strength), blowOut(), relight() }.
-       Candle tapping / blow detection is NOT here (finale.js attaches to #candles). */
+    /* popup.js - the pop-up cake: performs the cake's beats of a Round (src/round.js owns when).
+       Implements Card.cake = { rise(rm), light(i), lightAll(), fizzle(i), flicker(strength), blowOut(),
+       relight(rm), fold(), reset() }. Each beat acts now; the only timers here are local animation detail
+       (the 110 ms relight stagger, clearing a finished fizzle). Candle tapping / blow detection is NOT here
+       (finale.js attaches to #candles). */
     var Card = window.Card;
     var root = document.getElementById('popup');
     var candlesEl = document.getElementById('candles');
@@ -42,46 +44,16 @@
     }
 
     function lightCandle(c) {
+      if (!c) return;
       c.classList.remove('out', 'fizz');
       c.classList.add('on');
     }
     function fizzle(c) {
+      if (!c) return;
       c.classList.remove('on', 'out');
       retrigger(c, 'fizz');
       later(function () {c.classList.remove('fizz');}, 1100);
     }
-
-    var cake = {
-      // 0..1: flames lean and shrink in proportion to strength
-      flicker: function (s) {setFlicker(s);},
-
-      // all flames go out with smoke wisps. Idempotent.
-      blowOut: function () {
-        if (out) return;
-        out = true;
-        clearTimers();            // cancel any lighting still scheduled
-        setFlicker(0);
-        candleEls.forEach(function (c) {
-          var wasLit = c.classList.contains('on');
-          c.classList.remove('on', 'fizz');
-          if (wasLit) retrigger(c, 'out');
-        });
-      },
-
-      // flames back (staggered), smoke cleared
-      relight: function () {
-        clearTimers();
-        out = false;
-        setFlicker(0);
-        var rm = Card && Card.reducedMotion;
-        candleEls.forEach(function (c, i) {
-          c.classList.remove('out', 'fizz');
-          if (rm) lightCandle(c);
-          else later(function () {lightCandle(c);}, i * 110);
-        });
-      }
-    };
-    if (Card) Card.cake = cake;
 
     function resetState() {
       clearTimers();
@@ -93,48 +65,63 @@
       void root.getBoundingClientRect();   // so a replayed open restarts every animation
     }
 
-    function rise() {
-      resetState();
-      if (!root) {Card.emit('popupDone'); return;}
-      var rm = !!Card.reducedMotion;
-      if (rm) root.classList.add('rm');
-      root.classList.add('is-up');
+    var cake = {
+      // spring up (~2.65s in total: tiers 0-0.96s, lean 0.82-1.72s, then the Round lights the candles).
+      // false when there is no cake to show.
+      rise: function (rm) {
+        resetState();
+        if (!root) return false;
+        if (rm) root.classList.add('rm');   // appear quickly: no bounce
+        root.classList.add('is-up');
+        return true;
+      },
+      light: function (i) {lightCandle(candleEls[i]);},
+      lightAll: function () {candleEls.forEach(lightCandle);},
+      fizzle: function (i) {fizzle(candleEls[i]);},   // spark + tiny smoke, flame dies
 
-      if (rm) {
-        // appear quickly: no bounce, no fizzle
-        later(function () {candleEls.forEach(lightCandle);}, 150);
-        later(function () {Card.emit('popupDone');}, 350);
-        return;
-      }
-      // ~2.65s in total: tiers 0-0.96s, lean 0.82-1.72s, candles after that
-      later(function () {lightCandle(candleEls[0]);}, 1350);
-      later(function () {lightCandle(candleEls[1]);}, 1600);
-      later(function () {fizzle(candleEls[2]);}, 1850);   // spark + tiny smoke, flame dies
-      later(function () {lightCandle(candleEls[2]);}, 2450);   // ...and catches ~0.6s later
-      later(function () {Card.emit('popupDone');}, 2650);
-    }
+      // 0..1: flames lean and shrink in proportion to strength
+      flicker: function (s) {setFlicker(s);},
 
-    function fold() {
-      clearTimers();
-      if (!root) return;
-      setFlicker(0);
-      candleEls.forEach(function (c) {c.classList.remove('on', 'out', 'fizz');});
-      root.classList.remove('is-up');
-      void root.getBoundingClientRect();
-      root.classList.add('is-folding');
-    }
+      // all flames go out with smoke wisps. Idempotent.
+      blowOut: function () {
+        if (out) return;
+        out = true;
+        clearTimers();            // cancel any local animation still scheduled
+        setFlicker(0);
+        candleEls.forEach(function (c) {
+          var wasLit = c.classList.contains('on');
+          c.classList.remove('on', 'fizz');
+          if (wasLit) retrigger(c, 'out');
+        });
+      },
 
-    function replay() {
-      cake.relight();
-      later(function () {Card.emit('popupDone');}, Card.reducedMotion ? 60 : 450);
-    }
+      // flames back (staggered unless reduced motion), smoke cleared
+      relight: function (rm) {
+        clearTimers();
+        out = false;
+        setFlicker(0);
+        if (rm === undefined) rm = Card && Card.reducedMotion;
+        candleEls.forEach(function (c, i) {
+          c.classList.remove('out', 'fizz');
+          if (rm) lightCandle(c);
+          else later(function () {lightCandle(c);}, i * 110);
+        });
+      },
 
-    if (Card) {
-      Card.on('opened', rise);
-      Card.on('closing', fold);
-      Card.on('closed', resetState);
-      Card.on('replay', replay);
-    }
+      // the card is folding shut
+      fold: function () {
+        clearTimers();
+        if (!root) return;
+        setFlicker(0);
+        candleEls.forEach(function (c) {c.classList.remove('on', 'out', 'fizz');});
+        root.classList.remove('is-up');
+        void root.getBoundingClientRect();
+        root.classList.add('is-folding');
+      },
+
+      reset: resetState
+    };
+    if (Card) Card.cake = cake;
 
   } catch (err) {console.error('[popup] failed to load:', err);}
 })();

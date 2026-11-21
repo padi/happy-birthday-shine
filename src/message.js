@@ -1,8 +1,11 @@
 ; (function () {
   'use strict';
   try {
-    /* message.js - typewriter reveal of the note (on 'popupDone').
-       Exposes window.Card.message = { reveal() }. */
+    /* message.js - typewriter reveal of the note: performs the message's beats of a Round (src/round.js).
+       Exposes Card.message = { reveal(onTyped), showLate(), hideLate(), stop(), reset() }.
+       The typewriter's per-character timing is local; when the late part shows (after the candles are
+       out, and never before the main text has finished typing) is the Round's call: reveal() reports
+       "typing finished" through onTyped and the Round calls showLate(). */
 
     var Card = window.Card;
     var CONFIG = window.CONFIG || {};
@@ -16,7 +19,6 @@
     var CHAR_MS = 25;      // per character
     var PAUSE_END = 260;   // after . ! ?
     var PAUSE_MID = 120;   // after , ; :
-    var LATE_DELAY = 1400; // after 'candlesOut', so the finale lands after the confetti
 
     /* ====================================================================== message */
     var greetEl, bodyEl, signEl, dateEl, footEl, lateEl;
@@ -25,10 +27,9 @@
     var emEls = [];
     var caret = null;
     var timer = null;
-    var lateTimer = null;
     var status = 'idle';   // 'idle' | 'typing' | 'done'
     var lateShown = false;
-    var latePending = false;   // candlesOut came while the main text was still typing
+    var onTyped = null;    // reveal()'s callback, called once the main text is fully shown
     var builtFor = '';
 
     function mk(tag, cls) {
@@ -100,10 +101,6 @@
       }
     }
 
-    function stopLateTimer() {
-      if (lateTimer) {clearTimeout(lateTimer); lateTimer = null;}
-    }
-
     function build() {
       if (!root) return;
       greetEl = root.querySelector('.msg-greet');
@@ -113,12 +110,10 @@
       footEl = root.querySelector('.msg-foot');
       if (!greetEl || !bodyEl || !signEl || !dateEl) return;
 
-      stopLateTimer();
       chars = [];
       lateChars = [];
       emEls = [];
       caret = null;
-      latePending = false;
 
       var to = CONFIG.to ? 'Dear ' + CONFIG.to + ',' : '';
       var from = CONFIG.from ? 'Love, ' + CONFIG.from : '';
@@ -175,7 +170,13 @@
       stopTimer();
       removeCaret();
       status = 'done';
-      if (latePending) {latePending = false; setLate(true);}
+      typed();
+    }
+
+    function typed() {
+      var cb = onTyped;
+      onTyped = null;
+      if (cb) cb();
     }
 
     function wiggle() {
@@ -202,43 +203,47 @@
       timer = setTimeout(function () {typeNext(next);}, wait);
     }
 
-    function reveal() {
-      if (!root || status !== 'idle') return;          // idempotent: never retype, keep shown
+    /* reveal(onTyped): type the greeting + main body; onTyped() once it is all shown. Idempotent: never
+       retypes. Already shown -> onTyped() now; still typing (a replay mid-typing) -> onTyped() at the end. */
+    function reveal(cb) {
+      if (!root) return;
+      if (status === 'done') {if (cb) cb(); return;}
+      if (status === 'typing') {onTyped = cb || null; return;}
       var sig = [CONFIG.to ? 'Dear ' + CONFIG.to + ',' : '', CONFIG.from ? 'Love, ' + CONFIG.from : '', CONFIG.date ? String(CONFIG.date) : ''].join('|');
       if (!chars.length || sig !== builtFor) build();
       if (!chars.length) return;
+      onTyped = cb || null;
       root.setAttribute('data-msg', 'on');
       if (Card.reducedMotion) {
         showAll();
         status = 'done';
+        typed();
         return;
       }
       status = 'typing';
       timer = setTimeout(function () {typeNext(0);}, 250);   // let the fade-in start first
     }
 
-    /* candlesOut: after the confetti has landed, pop in "Happy birthday!", then the sign-off and date */
-    function scheduleLate() {
-      if (!root || lateShown) return;
-      stopLateTimer();
-      lateTimer = setTimeout(function () {
-        lateTimer = null;
-        if (Card.state === 'closed' || Card.state === 'closing' || lateShown) return;
-        if (status === 'typing') {latePending = true; return;}   // never show it before the main text is done
-        if (status === 'done') setLate(true);
-      }, LATE_DELAY);
+    /* pop in "Happy birthday!", then the sign-off and date */
+    function showLate() {
+      if (!root || !lateEl || lateShown) return;
+      setLate(true);
     }
 
-    /* replay: the main part stays shown (not retyped); the delayed parts hide until the next candlesOut */
+    /* replay: the main part stays shown (not retyped); the delayed parts hide until the Round shows them again */
     function hideLate() {
-      stopLateTimer();
-      latePending = false;
       if (lateEl) setLate(false);
     }
 
-    function reset() {
+    /* the card is folding shut: no typing while it does */
+    function stop() {
       stopTimer();
       removeCaret();
+      onTyped = null;
+    }
+
+    function reset() {
+      stop();
       hideLate();
       status = 'idle';
       if (root) root.removeAttribute('data-msg');
@@ -250,16 +255,7 @@
 
     build();
 
-    Card.message = {reveal: reveal};
-
-    Card.on('popupDone', function () {
-      if (Card.state === 'closed' || Card.state === 'closing') return;
-      reveal();
-    });
-    Card.on('candlesOut', scheduleLate);
-    Card.on('replay', hideLate);
-    Card.on('closing', function () {stopTimer(); stopLateTimer(); removeCaret();});  // no typing while the card folds shut
-    Card.on('closed', reset);
+    Card.message = {reveal: reveal, showLate: showLate, hideLate: hideLate, stop: stop, reset: reset};
 
   } catch (err) {console.error('[message] failed to load:', err);}
 })();
