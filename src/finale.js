@@ -18,14 +18,7 @@
 
     // ---------- tuning ----------
     var TAPS_NEEDED = 3;          // puffs to put the candles out (1 with reduced motion)
-    var BAND_LO = 100, BAND_HI = 1000;   // Hz: the "whoosh" of a blow lives down here
-    var BASELINE_MS = 300;        // ambient measurement window
-    var DB_FLOOR = -85;           // never trust an ambient level below this (digital silence)
-    var DB_START = 6, DB_SPAN = 18;      // strength = (dB over ambient - DB_START) / DB_SPAN
-    var THRESHOLD = 0.4;          // strength that counts as "blowing"
-    var NEED_MS = 400, WINDOW_MS = 1000; // cumulative over-threshold time inside a sliding window
-    var HINT_MS = 10000;          // no blow yet -> hint
-    var MIC_MAX_MS = 45000;       // never keep the mic open forever
+    // mic tuning (baseline, threshold, window, hint / max-open timers) lives in blow-detector.js
     var T_CONFETTI = 500, T_MANATEE = 1200, MUNCH_GAP = 400;
 
     var TXT = {
@@ -48,9 +41,7 @@
     var micStrength = 0;
     var timers = [];
     var tapTimers = [];
-    var micTimers = [];
-    var mic = null;               // { ac, stream, src, an, raf, ... } while the mic is open
-    var token = 0;                // invalidates late getUserMedia results
+    var mic = null;               // Card.blowDetector session handle { stop() } while the mic is open
 
     var ui = {};                  // element refs
 
@@ -60,7 +51,6 @@
       if (text != null) e.textContent = text;
       return e;
     }
-    function noop() { }
     function later(fn, ms) {
       var id = setTimeout(function () {
         var i = timers.indexOf(id);
@@ -73,9 +63,6 @@
     function clearList(list) {while (list.length) clearTimeout(list.pop());}
     function reduced() {return !!Card.reducedMotion;}
     function clamp01(v) {return v < 0 ? 0 : (v > 1 ? 1 : v);}
-    function nowMs() {
-      return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-    }
 
     /* ====================================================================== DOM */
     function build() {
@@ -241,8 +228,7 @@
     }
 
     function switchToTap(failed) {
-      token++;                    // abandon any pending permission prompt
-      stopMic();
+      stopMic();                  // also abandons any pending permission prompt
       if (failed) micOk = false;
       if (!armed || outDone) return;
       mode = 'tap';
@@ -251,183 +237,46 @@
     }
 
     /* ====================================================================== mic path */
-    function closeCtx(ac) {
-      if (!ac) return;
-      try {
-        var p = ac.close();
-        if (p && typeof p.catch === 'function') p.catch(noop);
-      } catch (e) { /* ignore */}
-    }
-    function stopStream(stream) {
-      if (!stream) return;
-      try {
-        var tracks = stream.getTracks ? stream.getTracks() : [];
-        for (var i = 0; i < tracks.length; i++) {try {tracks[i].stop();} catch (e) { /* ignore */} }
-      } catch (e2) { /* ignore */}
-    }
-
-    // stop all tracks, disconnect nodes, close the context. Safe to call any time.
-    function stopMic() {
-      clearList(micTimers);
-      micStrength = 0;
-      var m = mic;
+    // the detector owns the mic session; this side only maps its statuses onto the blow UI
+    function stopMic() {          // safe to call any time
+      var h = mic;
       mic = null;
-      if (!m) {setMeter(0); return;}
-      if (m.raf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(m.raf);
-      m.raf = 0;
-      stopStream(m.stream);
-      try {if (m.src) m.src.disconnect();} catch (e) { /* ignore */}
-      try {if (m.an) m.an.disconnect();} catch (e2) { /* ignore */}
-      closeCtx(m.ac);
+      if (h) h.stop();
+      micStrength = 0;
       setMeter(0);
     }
 
     function startMic() {
       if (!armed || outDone || mode === 'listening' || mode === 'requesting') return;
-      var md = navigator.mediaDevices;
-      var AC = window.AudioContext || window.webkitAudioContext;
-      if (!md || typeof md.getUserMedia !== 'function' || window.isSecureContext === false || !AC) {
-        switchToTap(true);
-        return;
-      }
-      // create the context inside the click (iOS / autoplay policies)
-      var ac = null;
-      try {
-        ac = new AC();
-        if (ac.state === 'suspended' && typeof ac.resume === 'function') {
-          var rp = ac.resume();
-          if (rp && typeof rp.catch === 'function') rp.catch(noop);
-        }
-      } catch (e) {ac = null;}
-      if (!ac) {switchToTap(true); return;}
-
-      var my = ++token;
-      mode = 'requesting';
-      render();
-      setText(TXT.requesting);
-
-      var req;
-      try {
-        req = Promise.resolve(md.getUserMedia({
-          audio: {echoCancellation: false, noiseSuppression: false, autoGainControl: false}
-        }));
-      } catch (err) {
-        closeCtx(ac);
-        switchToTap(true);
-        return;
-      }
-      req.then(function (stream) {
-        if (my !== token || !armed || outDone) {   // card closed / tapped out / replaced while the prompt was open
-          stopStream(stream);
-          closeCtx(ac);
-          return;
-        }
-        beginListening(ac, stream, my);
-      }, function () {
-        closeCtx(ac);
-        if (my !== token) return;
-        switchToTap(true);
-      });
-    }
-
-    function beginListening(ac, stream, my) {
-      var m = {ac: ac, stream: stream, src: null, an: null, raf: 0, buf: null, bytes: null};
-      mic = m;
-      try {
-        m.src = ac.createMediaStreamSource(stream);
-        m.an = ac.createAnalyser();
-        m.an.fftSize = 2048;
-        m.an.smoothingTimeConstant = 0.2;
-        m.src.connect(m.an);                 // not connected to the speakers: no feedback
-        m.buf = new Float32Array(m.an.frequencyBinCount);
-        m.bytes = new Uint8Array(m.an.frequencyBinCount);
-        if (ac.state === 'suspended' && typeof ac.resume === 'function') {
-          var rp = ac.resume();
-          if (rp && typeof rp.catch === 'function') rp.catch(noop);
-        }
-      } catch (e) {
-        stopMic();
-        switchToTap(true);
-        return;
-      }
-
-      var binHz = ac.sampleRate / m.an.fftSize;
-      var lo = Math.max(1, Math.floor(BAND_LO / binHz));
-      var hi = Math.min(m.an.frequencyBinCount - 1, Math.ceil(BAND_HI / binHz));
-      var t0 = nowMs();
-      var last = t0;
-      var baseSum = 0, baseN = 0, baseline = null;
-      var samples = [];                      // { t, ms } of over-threshold time
-      var smooth = 0;
-
-      mode = 'listening';
-      render();
-      setText(TXT.baseline);
-      setMeter(0);
-
-      // 10s without a blow: hint (keeps listening)
-      micTimers.push(setTimeout(function () {
-        if (my !== token || mode !== 'listening') return;
-        setText(TXT.hint);
-      }, HINT_MS));
-      // never leave the mic open for long
-      micTimers.push(setTimeout(function () {
-        if (my !== token || mode !== 'listening') return;
-        switchToTap(false);
-      }, MIC_MAX_MS));
-
-      // band level in dB (mean power between BAND_LO and BAND_HI)
-      function bandDb() {
-        var an = m.an, sum = 0, n = hi - lo + 1, i;
-        if (typeof an.getFloatFrequencyData === 'function') {
-          an.getFloatFrequencyData(m.buf);
-          for (i = lo; i <= hi; i++) {
-            var d = m.buf[i];
-            if (!isFinite(d)) d = -140;
-            sum += Math.pow(10, d / 10);
-          }
-        } else {
-          an.getByteFrequencyData(m.bytes);
-          var mn = an.minDecibels, mx = an.maxDecibels;
-          for (i = lo; i <= hi; i++) sum += Math.pow(10, (mn + (m.bytes[i] / 255) * (mx - mn)) / 10);
-        }
-        return 10 * Math.log10(sum / n + 1e-14);
-      }
-
-      function tick() {
-        if (mic !== m) return;
-        m.raf = requestAnimationFrame(tick);
-        var t = nowMs();
-        var dt = Math.min(100, Math.max(0, t - last));
-        last = t;
-        var db = bandDb();
-
-        var strength = 0;
-        if (baseline === null) {
-          baseSum += db; baseN++;
-          if (t - t0 >= BASELINE_MS && baseN > 0) {
-            baseline = Math.max(DB_FLOOR, baseSum / baseN);
+      var det = Card.blowDetector;
+      if (!det || typeof det.listen !== 'function') {switchToTap(true); return;}
+      mic = det.listen({
+        onStatus: function (s) {
+          if (s === 'requesting') {
+            mode = 'requesting';
+            render();
+            setText(TXT.requesting);
+          } else if (s === 'baseline') {
+            mode = 'listening';
+            render();
+            setText(TXT.baseline);
+            setMeter(0);
+          } else if (s === 'listening') {
             setText(TXT.listening);
+          } else if (s === 'hint') {
+            if (mode === 'listening') setText(TXT.hint);
           }
-        } else {
-          var delta = db - baseline;
-          strength = clamp01((delta - DB_START) / DB_SPAN);
-          if (strength < 0.05) baseline = Math.max(DB_FLOOR, baseline * 0.98 + db * 0.02);   // follow slow drift
-        }
-
-        smooth = strength > smooth ? strength : smooth * 0.8 + strength * 0.2;   // quick attack, soft release
-        micStrength = smooth;
-        setMeter(smooth);
-        applyFlicker();
-        Card.emit('blow', {strength: smooth});
-
-        samples.push({t: t, ms: strength >= THRESHOLD ? dt : 0});
-        while (samples.length && t - samples[0].t > WINDOW_MS) samples.shift();
-        var over = 0;
-        for (var i = 0; i < samples.length; i++) over += samples[i].ms;
-        if (over >= NEED_MS) extinguish();
-      }
-      m.raf = requestAnimationFrame(tick);
+        },
+        onStrength: function (v) {
+          micStrength = v;
+          setMeter(v);
+          applyFlicker();
+          Card.emit('blow', {strength: v});
+        },
+        onBlow: function () {extinguish();},
+        // denied / unsupported / error -> tap only; MIC_MAX timeout -> tap but keep the mic button
+        onFail: function (reason) {switchToTap(reason !== 'timeout');}
+      });
     }
 
     /* ====================================================================== candles out + finale */
@@ -492,7 +341,6 @@
 
     /* ====================================================================== rounds */
     function resetUi() {
-      token++;
       stopMic();
       clearList(timers);
       clearList(tapTimers);
@@ -541,7 +389,6 @@
       // a hidden tab must not keep the mic open
       doc.addEventListener('visibilitychange', function () {
         if (doc.hidden && (mode === 'listening' || mode === 'requesting')) {
-          token++;
           stopMic();
           mode = 'ask';
           render();
